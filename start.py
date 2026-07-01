@@ -1,6 +1,8 @@
 import time
-import powerfactory as pf
+import sys
+import logging
 import logging.config
+import powerfactory as pf
 from config_logging import configure_logging as cl
 from pf_config import pft
 import pf_protection_helper as helper
@@ -14,9 +16,51 @@ from fault_study import fault_level_study as fs
 from cond_damage import conductor_damage as cd
 from save_results import save_result as sr
 
+logger = logging.getLogger(__name__)
+
+
+def setup_stdout_logging(level: int = logging.INFO) -> None:
+    """Ensure assessment progress is visible on the console.
+
+    Adds a stdout StreamHandler to the root logger if one is not already
+    present. Idempotent and safe on both entry paths:
+      * standalone (__main__): complements the file handler from basicConfig
+      * imported (called from batch_relay_update): the mastering process has
+        already attached a stdout handler, so this is a no-op.
+
+    Only lowers the root level toward INFO if it is currently more
+    restrictive; it never raises the level, so a DEBUG root configured by a
+    host process is left untouched.
+    """
+    root = logging.getLogger()
+
+    if root.level == logging.NOTSET or root.level > level:
+        root.setLevel(level)
+
+    already = any(
+        isinstance(h, logging.StreamHandler)
+        and getattr(h, "stream", None) is sys.stdout
+        for h in root.handlers
+    )
+    if not already:
+        handler = logging.StreamHandler(sys.stdout)
+        handler.setLevel(level)
+        handler.setFormatter(
+            logging.Formatter(
+                "%(asctime)s: %(module)s: Line: %(lineno)d: %(message)s"
+            )
+        )
+        root.addHandler(handler)
+
+
+
 
 def begin(app: pft.Application) -> None:
 
+    pp.ResetCalculation()
+
+    setup_stdout_logging()
+    logger.info("System Protection Assessment started")
 
     # Activate "All Active Grids Study Case"
     study_folder = app.GetProjectFolder("study")
@@ -25,11 +69,14 @@ def begin(app: pft.Application) -> None:
     )
     int_case = all_grids_cases[0]
     int_case.Activate()
+    logger.info("Activated 'All Active Grids Study Case'")
 
     # Get region and user inputs
     region = helper.obtain_region(app)
+    logger.info(f"Region: {region}")
 
     radial_list, mesh_feeder = mesh_feeder_check(app)
+    logger.info(f"{len(radial_list)} radial feeders detected")
 
     feeders_devices, bu_devices = get_feeders_devices(app, radial_list)
     chk_empty_fdrs(app, feeders_devices)
@@ -44,11 +91,17 @@ def begin(app: pft.Application) -> None:
 
     # Convert to assets dataclasses
     feeders = cvrt_fdr_to_dataclass(app, feeders_devices, bu_devices)
+    logger.info(f"{len(feeders)} feeders to assess")
 
     study_selections = ["Fault Level Study (all relays configured in model)", 'Conductor Damage Assessment']
     # Process each feeder
-    for feeder in feeders:
+    for i, feeder in enumerate(feeders, start=1):
+        name = getattr(feeder.obj, "loc_name", str(feeder.obj))
+
+        logger.info(f"[{i}/{len(feeders)}] {name}: open points")
         gop.get_open_points(app, feeder)
+
+        logger.info(f"[{i}/{len(feeders)}] {name}: fault study")
         fs.fault_study(
             app, external_grid, region, feeder, study_selections
         )
@@ -56,10 +109,14 @@ def begin(app: pft.Application) -> None:
         selected_devices = [
             device for device in feeder.devices]
 
+        logger.info(f"[{i}/{len(feeders)}] {name}: conductor damage")
         cd.cond_damage(app, selected_devices)
+
+    logger.info("Saving results")
     sr.save_dataframe(
         app, region, study_selections, external_grid, feeders
     )
+    logger.info("System Protection Assessment complete")
 
 
 def mesh_feeder_check(app) -> Tuple[List[str], bool]:
@@ -254,8 +311,11 @@ def get_feeders_devices(app, radial_list: List[str]
                     grid_device_dict[grid].append(device)
                     break
             except AttributeError:
-                app.PrintPlain(grid)
-                exit(0)
+                logger.warning(
+                    f"Grid {getattr(grid, 'loc_name', grid)} has no usable "
+                    "bus1.cterm; skipping backup mapping for this grid"
+                )
+                continue
 
     return feeder_device_dict, grid_device_dict
 
