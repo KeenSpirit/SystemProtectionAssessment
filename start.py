@@ -57,8 +57,6 @@ def setup_stdout_logging(level: int = logging.INFO) -> None:
 
 def begin(app: pft.Application) -> None:
 
-    pp.ResetCalculation()
-
     setup_stdout_logging()
     logger.info("System Protection Assessment started")
 
