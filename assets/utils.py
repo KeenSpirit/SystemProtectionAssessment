@@ -1,7 +1,7 @@
 """
-Utility functions for domain model operations.
+Utility functions for assets model operations.
 
-This module contains functions that operate on domain models but don't
+This module contains functions that operate on assets models but don't
 belong to a specific model class.
 """
 
@@ -10,7 +10,7 @@ from functools import lru_cache
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from domain.termination import Termination
+    from assets.termination import Termination
 
 
 @lru_cache(maxsize=1)

@@ -1,5 +1,5 @@
 """
-Distribution line domain model for protection assessment.
+Distribution line assets model for protection assessment.
 
 A line represents a network conductor section with fault current data
 and conductor damage assessment results.
@@ -8,7 +8,7 @@ and conductor damage assessment results.
 from dataclasses import dataclass
 from typing import Optional, Union, TYPE_CHECKING
 
-import domain.utils as utils
+import assets.utils as utils
 
 if TYPE_CHECKING:
     from pf_config import pft

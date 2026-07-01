@@ -34,7 +34,7 @@ from openpyxl.styles import Alignment, Font
 from openpyxl.utils import get_column_letter
 
 from pf_config import pft
-import domain as dd
+import assets as ast
 from fault_study import fault_impedance
 from relays.reach_factors import device_reach_factors
 from relays.elements import get_prot_elements
@@ -948,7 +948,7 @@ def adjust_cond_damage_col_width(ws) -> None:
             ws.column_dimensions[column_letter].width = fixed_widths[column_letter]
 
 
-def nps_oos(device: dd.Device) -> bool:
+def nps_oos(device: ast.Device) -> bool:
     """
     Determine whether any nps elements related to the device
     (including upstream devices) are in service.

@@ -1,5 +1,5 @@
 """
-Feeder domain model for protection assessment.
+Feeder assets model for protection assessment.
 
 A feeder represents a distribution circuit originating from a substation,
 containing protection devices, network topology, and operating parameters.
@@ -54,7 +54,7 @@ def initialise_fdr_dataclass(element: "pft.ElmFeeder") -> Feeder:
     Initialize a Feeder dataclass from a PowerFactory ElmFeeder object.
 
     Extracts the essential feeder information from the PowerFactory object
-    and creates a domain model instance for use in protection assessment.
+    and creates a assets model instance for use in protection assessment.
 
     Args:
         element: The PowerFactory ElmFeeder object

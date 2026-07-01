@@ -1,5 +1,5 @@
 """
-Network termination (terminal) domain model for protection assessment.
+Network termination (terminal) assets model for protection assessment.
 
 A termination represents a network terminal where fault studies are performed
 and protection reach is evaluated.
@@ -8,7 +8,7 @@ and protection reach is evaluated.
 from dataclasses import dataclass
 from typing import Optional, TYPE_CHECKING
 
-from domain.enums import ph_attr_lookup
+from assets.enums import ph_attr_lookup
 
 if TYPE_CHECKING:
     from pf_config import pft
@@ -89,7 +89,7 @@ def initialise_term_dataclass(elmterm: "pft.ElmTerm") -> Optional[Termination]:
     """
     Initialize a Termination dataclass from a PowerFactory ElmTerm object.
 
-    Creates a domain model instance for the terminal with basic electrical
+    Creates a assets model instance for the terminal with basic electrical
     parameters. Fault current values are populated later by fault studies.
 
     Args:

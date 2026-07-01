@@ -17,8 +17,8 @@ Functions:
 from typing import Dict, List, TYPE_CHECKING
 
 from pf_config import pft
-from domain.enums import ElementType
-from domain import feeder as fdr
+from assets.enums import ElementType
+from assets import feeder as fdr
 from fdr_open_points import fdr_open_user_input as foui
 from importlib import reload
 

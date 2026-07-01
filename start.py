@@ -1,10 +1,11 @@
 import time
 import powerfactory as pf
 import logging.config
+from config_logging import configure_logging as cl
 from pf_config import pft
 import pf_protection_helper as helper
 from typing import Any, Dict, List, Tuple
-import domain as dd
+import assets as ast
 import math
 from devices import fuses
 from relays import elements
@@ -14,7 +15,7 @@ from cond_damage import conductor_damage as cd
 from save_results import save_result as sr
 
 
-def main(app: pft.Application) -> None:
+def begin(app: pft.Application) -> None:
 
 
     # Activate "All Active Grids Study Case"
@@ -25,14 +26,13 @@ def main(app: pft.Application) -> None:
     int_case = all_grids_cases[0]
     int_case.Activate()
 
-
     # Get region and user inputs
     region = helper.obtain_region(app)
 
-    radial_list, mesh_feeder = mesh_feeder_check()
+    radial_list, mesh_feeder = mesh_feeder_check(app)
 
-    feeders_devices, bu_devices = get_feeders_devices(radial_list)
-    chk_empty_fdrs(feeders_devices)
+    feeders_devices, bu_devices = get_feeders_devices(app, radial_list)
+    chk_empty_fdrs(app, feeders_devices)
 
     grids = [
         grid for grid in app.GetCalcRelevantObjects('*.ElmXnet')
@@ -40,12 +40,12 @@ def main(app: pft.Application) -> None:
            and grid.GetAttribute('bus1') is not None
     ]
 
-    external_grid = get_grid_data(grids)
+    external_grid = get_grid_data(app, grids)
 
-    # Convert to domain dataclasses
+    # Convert to assets dataclasses
     feeders = cvrt_fdr_to_dataclass(app, feeders_devices, bu_devices)
 
-    study_selections = ["Fault Level Study (all relays configured in model)"]
+    study_selections = ["Fault Level Study (all relays configured in model)", 'Conductor Damage Assessment']
     # Process each feeder
     for feeder in feeders:
         gop.get_open_points(app, feeder)
@@ -62,7 +62,7 @@ def main(app: pft.Application) -> None:
     )
 
 
-def mesh_feeder_check(self) -> Tuple[List[str], bool]:
+def mesh_feeder_check(app) -> Tuple[List[str], bool]:
     """
     Filter feeders to exclude mesh configurations.
 
@@ -76,13 +76,13 @@ def mesh_feeder_check(self) -> Tuple[List[str], bool]:
             - radial_list: Sorted list of radial feeder names.
             - mesh_feeder_check: True if any lines are out of service.
     """
-    self.app.PrintPlain("Checking for radial feeders...")
+    app.PrintPlain("Checking for radial feeders...")
     grids = [
-            grid for grid in self.app.GetCalcRelevantObjects('*.ElmXnet')
+            grid for grid in app.GetCalcRelevantObjects('*.ElmXnet')
             if grid.outserv == 0
         ]
     all_feeders = [
-        fdr for fdr in self.app.GetCalcRelevantObjects('*.ElmFeeder')
+        fdr for fdr in app.GetCalcRelevantObjects('*.ElmFeeder')
                    if fdr.GetAll()
                    and not fdr.IsOutOfService()
     ]
@@ -99,9 +99,9 @@ def mesh_feeder_check(self) -> Tuple[List[str], bool]:
             radial_list.append(feeder.loc_name )
 
     if radial_list:
-        self.app.PrintPlain("Radial feeders detected.")
+        app.PrintPlain("Radial feeders detected.")
     else:
-        self.show_no_radial_feeders_message()
+        app.PrintPlain(" No radial feeders detected.")
 
     mesh_feeder_check = False
     if mesh_list:
@@ -110,7 +110,7 @@ def mesh_feeder_check(self) -> Tuple[List[str], bool]:
     return sorted(radial_list), mesh_feeder_check
 
 
-def get_grid_data(self, grids: List) -> Dict:
+def get_grid_data(app, grids: List) -> Dict:
     """
     Collect fault level parameters from external grid elements.
 
@@ -136,11 +136,11 @@ def get_grid_data(self, grids: List) -> Dict:
         grid_data[grid] = [
             grid.GetAttribute(attr) for attr in attributes
         ]
-        self.app.PrintPlain(
+        app.PrintPlain(
             f'Finding System normal source impedance for {grid}...'
         )
         grid_loc_name = grid.GetAttribute('loc_name')
-        master_grid = self.get_master_grid(grid_loc_name)
+        master_grid = get_master_grid(app, grid_loc_name)
 
         if master_grid:
             grid_prw = master_grid.GetAttribute('snssmin')
@@ -155,7 +155,7 @@ def get_grid_data(self, grids: List) -> Dict:
             grid_data[grid].extend(master_grid_imp)
 
         if len(grid_data[grid]) == 10:
-            self.app.PrintPlain(
+            app.PrintPlain(
                 f'Could not find system normal source impedance '
                 f'for {grid}...'
             )
@@ -163,8 +163,49 @@ def get_grid_data(self, grids: List) -> Dict:
 
     return grid_data
 
-def get_feeders_devices(
-    self, radial_list: List[str]
+
+def get_master_grid(app, grid_loc_name: str):
+    """
+    Retrieve master project grid data for system normal minimum.
+
+    Searches the derived base project for matching external grid
+    elements to obtain system normal minimum fault level data.
+
+    Args:
+        grid_loc_name: Location name of the grid to find.
+
+    Returns:
+        The master project grid object if found, False otherwise.
+    """
+    project = app.GetActiveProject()
+    derived_proj = project.GetAttribute('der_baseproject')
+
+    if derived_proj is None:
+        return False
+
+    net_dat = derived_proj.GetContents("Network Model\\Network Data")
+    for network in net_dat:
+        elm_nets = network.GetContents("*.ElmNet")
+        for elm_net in elm_nets:
+            elm_substats = elm_net.GetContents("*.ElmSubstat")
+            for elm_substat in elm_substats:
+                grids = elm_substat.GetContents(
+                    f'{grid_loc_name}.ElmXnet', 1
+                )
+                if grids:
+                    master_proj_grids = grids[0]
+                    app.PrintPlain(
+                        f'Gathered master grid data for {grid_loc_name}.'
+                    )
+                    return master_proj_grids
+
+    app.PrintPlain(
+        f'Could not find master grid data for {grid_loc_name}.'
+    )
+    return False
+
+
+def get_feeders_devices(app, radial_list: List[str]
 ) -> Tuple[Dict[str, list], Dict[Any, list]]:
     """
     Get active relays and fuses mapped to feeders and grids.
@@ -182,14 +223,14 @@ def get_feeders_devices(
             - grid_device_dict: Dict mapping grid objects to lists
               of backup device objects.
     """
-    all_relays = elements.get_all_relays(self.app)
-    all_fuses = fuses.get_all_fuses(self.app)
+    all_relays = elements.get_all_relays(app)
+    all_fuses = fuses.get_all_fuses(app)
     devices = all_relays + all_fuses
 
     feeder_device_dict = {feeder: [] for feeder in radial_list}
     grid_device_dict = {
         grid: []
-        for grid in self.app.GetCalcRelevantObjects('*.ElmXnet')
+        for grid in app.GetCalcRelevantObjects('*.ElmXnet')
         if grid.bus1 is not None
     }
 
@@ -197,7 +238,7 @@ def get_feeders_devices(
         term = device.cbranch
         feeder = [
             feeder for feeder in radial_list
-            if term in self.app.GetCalcRelevantObjects(
+            if term in app.GetCalcRelevantObjects(
                 feeder + ".ElmFeeder"
             )[0].GetAll()
         ]
@@ -213,12 +254,13 @@ def get_feeders_devices(
                     grid_device_dict[grid].append(device)
                     break
             except AttributeError:
-                self.app.PrintPlain(grid)
+                app.PrintPlain(grid)
                 exit(0)
 
     return feeder_device_dict, grid_device_dict
 
-def chk_empty_fdrs(self, fdrs_devices: Dict) -> None:
+
+def chk_empty_fdrs(app, fdrs_devices: Dict) -> None:
     """
     Check that selected feeders have protection devices.
 
@@ -237,29 +279,29 @@ def chk_empty_fdrs(self, fdrs_devices: Dict) -> None:
     ]
 
     if len(empty_feeders) == len(fdrs_devices):
-        self.app.PrintError(
+        app.PrintError(
             "No protection devices were detected in the model for the "
             "selected feeders. \n"
             "Please add and configure the required protection devices "
             "and re-run the script."
         )
-        sys.exit(0)
 
     for empty_feeder in empty_feeders:
-        self.app.PrintWarn(
+        app.PrintWarn(
             f"No protection devices were detected in the model for "
             f"feeder {empty_feeder}. \n"
             "This feeder will be excluded from the study."
         )
         del fdrs_devices[empty_feeder]
 
+
 def cvrt_fdr_to_dataclass(
     app: pft.Application,
     feeders_devices: Dict,
     bu_devices: Dict
-) -> List[dd.Feeder]:
+) -> List[ast.Feeder]:
     """
-    Convert PowerFactory element selections to domain dataclasses.
+    Convert PowerFactory element selections to assets dataclasses.
 
     Transforms the dictionaries of PowerFactory objects returned by
     user input collection into structured Feeder and Device dataclasses
@@ -284,7 +326,7 @@ def cvrt_fdr_to_dataclass(
     if bu_devices:
         for grid, grid_devices in bu_devices.items():
             bu_devices[grid] = [
-                dd.initialise_dev_dataclass(device)
+                ast.initialise_dev_dataclass(device)
                 for device in grid_devices
             ]
 
@@ -293,9 +335,9 @@ def cvrt_fdr_to_dataclass(
 
     for fdr, devs in feeders_devices.items():
         feeder_obj = app.GetCalcRelevantObjects(fdr + ".ElmFeeder")[0]
-        feeder = dd.initialise_fdr_dataclass(feeder_obj)
+        feeder = ast.initialise_fdr_dataclass(feeder_obj)
 
-        devices = [dd.initialise_dev_dataclass(dev) for dev in devs]
+        devices = [ast.initialise_dev_dataclass(dev) for dev in devs]
         feeder.devices = devices
         # Give each feeder its own copy so a future per-feeder mutation
         # of bu_devices cannot bleed across feeders.
@@ -324,7 +366,7 @@ if __name__ == '__main__':
     app = pf.GetApplication()
 
     with helper.app_manager(app, gui=True) as app:
-        main(app)
+        begin(app)
 
     end = time.time()
     run_time = round(end - start, 6)

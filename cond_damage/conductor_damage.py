@@ -27,7 +27,7 @@ from typing import Dict, List, Optional, Tuple, Any
 
 from pf_config import pft
 from relays import current_conversion, elements, reclose
-from domain.enums import ElementType
+from assets.enums import ElementType
 
 
 # =============================================================================

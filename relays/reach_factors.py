@@ -20,14 +20,14 @@ Functions:
 import math
 from typing import Dict, List, Union, TYPE_CHECKING
 
-from domain.enums import ElementType
+from assets.enums import ElementType
 from relays.elements import get_prot_elements
 
 if TYPE_CHECKING:
     from pf_config import pft
-    from domain.device import Device
-    from domain.termination import Termination
-    from domain.line import Line
+    from assets.device import Device
+    from assets.termination import Termination
+    from assets.line import Line
 
 
 def device_reach_factors(

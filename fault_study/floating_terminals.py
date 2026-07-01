@@ -14,12 +14,12 @@ Functions:
 from typing import List, Dict
 
 from pf_config import pft
-import domain as dd
+import assets as ast
 
 
 def get_floating_terminals(
-    feeder: dd.Feeder,
-    devices: List[dd.Device]
+    feeder: ast.Feeder,
+    devices: List[ast.Device]
 ) -> Dict:
     """
     Find all floating terminal objects with their associated lines.
@@ -104,7 +104,7 @@ def find_end_points(feeder: pft.ElmFeeder) -> List[pft.ElmLne]:
                 x.GetAttribute('obj_id')
                 for x in elmlne.bus1.cterm.GetConnectedCubicles()
                 if x is not elmlne.GetAttribute('bus1')
-                if x.obj_id.GetClassName() == dd.ElementType.LINE.value
+                if x.obj_id.GetClassName() == ast.ElementType.LINE.value
             ]
         else:
             bus1 = []
@@ -116,7 +116,7 @@ def find_end_points(feeder: pft.ElmFeeder) -> List[pft.ElmLne]:
                 x.GetAttribute('obj_id')
                 for x in elmlne.bus2.cterm.GetConnectedCubicles()
                 if x is not elmlne.GetAttribute('bus2')
-                if x.obj_id.GetClassName() == dd.ElementType.LINE.value
+                if x.obj_id.GetClassName() == ast.ElementType.LINE.value
             ]
         else:
             bus2 = []

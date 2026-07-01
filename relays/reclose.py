@@ -15,7 +15,7 @@ Functions:
 
 from typing import Dict, Optional, Union, TYPE_CHECKING
 
-from domain.enums import ElementType
+from assets.enums import ElementType
 
 if TYPE_CHECKING:
     from pf_config import pft

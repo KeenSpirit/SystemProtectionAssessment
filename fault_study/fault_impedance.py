@@ -14,10 +14,10 @@ assumptions for earth faults:
 
 from typing import List
 from pf_config import pft
-import domain as dd
+import assets as ast
 
 
-def update_node_construction(devices: List[dd.Device]) -> None:
+def update_node_construction(devices: List[ast.Device]) -> None:
     """
     Determine and set the construction type for all terminal nodes.
 
@@ -34,7 +34,7 @@ def update_node_construction(devices: List[dd.Device]) -> None:
     _update_construction(all_nodes)
 
 
-def _get_all_terms(devices: List[dd.Device]) -> List[dd.Termination]:
+def _get_all_terms(devices: List[ast.Device]) -> List[ast.Termination]:
     """
     Extract all terminations from device list.
 
@@ -51,7 +51,7 @@ def _get_all_terms(devices: List[dd.Device]) -> List[dd.Termination]:
     return all_nodes
 
 
-def _update_construction(all_nodes: List[dd.Termination]) -> None:
+def _update_construction(all_nodes: List[ast.Termination]) -> None:
     """
     Set construction type for each node based on connected lines.
 
@@ -71,7 +71,7 @@ def _update_construction(all_nodes: List[dd.Termination]) -> None:
 
         # Get all lines connected to the node
         line_elements = [ele for ele in node.obj.GetConnectedElements()
-                         if ele.GetClassName() == dd.ElementType.LINE.value
+                         if ele.GetClassName() == ast.ElementType.LINE.value
                          ]
         # Handle case where upstream connection is not a line (e.g., ElmCoup)
         if not line_elements:
@@ -80,7 +80,7 @@ def _update_construction(all_nodes: List[dd.Termination]) -> None:
                 proxy_node = substation.pBusbar
                 line_elements = [
                     ele for ele in proxy_node.GetConnectedElements()
-                    if ele.GetClassName() == dd.ElementType.LINE.value
+                    if ele.GetClassName() == ast.ElementType.LINE.value
                 ]
             except (AttributeError, IndexError):
                 line_elements = []
@@ -106,7 +106,7 @@ def _update_construction(all_nodes: List[dd.Termination]) -> None:
 
 
 def get_terminal_pg_fault(region: str,
-                          term: dd.Termination,
+                          term: ast.Termination,
                           system_normal: bool = False
                           ) -> float:
     """

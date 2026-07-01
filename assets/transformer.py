@@ -1,5 +1,5 @@
 """
-Transformer/load domain model for protection assessment.
+Transformer/load assets model for protection assessment.
 
 The Tfmr class represents distribution transformers or aggregated loads
 for fusing coordination and protection reach analysis.
@@ -8,7 +8,7 @@ for fusing coordination and protection reach analysis.
 from dataclasses import dataclass
 from typing import Optional, Union, TYPE_CHECKING
 
-from domain.enums import ElementType
+from assets.enums import ElementType
 
 if TYPE_CHECKING:
     from pf_config import pft

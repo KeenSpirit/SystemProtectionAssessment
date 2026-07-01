@@ -32,12 +32,12 @@ from pf_config import pft
 import pf_protection_helper as helper
 from fault_study import analysis, study_templates, fault_impedance
 from fault_study import floating_terminals as ft
-import domain as dd
+import assets as ast
 from importlib import reload
 
 reload(analysis)
 reload(ft)
-reload(dd)
+reload(ast)
 reload(fault_impedance)
 
 
@@ -45,7 +45,7 @@ def fault_study(
     app: pft.Application,
     external_grid: Dict,
     region: str,
-    feeder: dd.Feeder,
+    feeder: ast.Feeder,
     study_selections: List[str]
 ) -> None:
     """
@@ -125,7 +125,7 @@ def fault_study(
 def get_downstream_objects(
     app: pft.Application,
     region: str,
-    devices: List[dd.Device]
+    devices: List[ast.Device]
 ) -> None:
     """
     Populate device objects with their downstream network components.
@@ -165,15 +165,15 @@ def get_downstream_objects(
         for obj in down_objs:
             class_name = obj.GetClassName()
 
-            if class_name == dd.ElementType.TERM.value and obj.uknom > 1:
+            if class_name == ast.ElementType.TERM.value and obj.uknom > 1:
                 terminals.append(obj)
-            if class_name == dd.ElementType.LOAD.value and region == 'SEQ':
+            if class_name == ast.ElementType.LOAD.value and region == 'SEQ':
                 loads.append(obj)
-            if class_name == dd.ElementType.TFMR.value and region == 'Regional Models':
+            if class_name == ast.ElementType.TFMR.value and region == 'Regional Models':
                 load_type = obj.typ_id
                 if "Regulators" not in load_type.GetFullName():
                     loads.append(obj)
-            if class_name == dd.ElementType.LINE.value:
+            if class_name == ast.ElementType.LINE.value:
                 lines.append(obj)
 
         device.sect_terms = terminals
@@ -182,7 +182,7 @@ def get_downstream_objects(
 
 
 def us_ds_device(
-    devices: List[dd.Device],
+    devices: List[ast.Device],
     bu_devices: Dict
 ) -> None:
     """
@@ -222,7 +222,7 @@ def us_ds_device(
                         device.us_devices.extend(grid_devices)
 
 
-def get_ds_capacity(devices: List[dd.Device]) -> None:
+def get_ds_capacity(devices: List[ast.Device]) -> None:
     """
     Calculate total downstream transformer capacity for each device.
 
@@ -237,7 +237,7 @@ def get_ds_capacity(devices: List[dd.Device]) -> None:
     """
     def _get_load(obj: pft.ElmLod) -> float:
         """Extract kVA rating from load or transformer."""
-        if obj.GetClassName() == dd.ElementType.LOAD.value:
+        if obj.GetClassName() == ast.ElementType.LOAD.value:
             return obj.Strat
         return obj.Snom_a * 1000
 
@@ -247,7 +247,7 @@ def get_ds_capacity(devices: List[dd.Device]) -> None:
         )
 
 
-def get_device_sections(app: pft.Application, devices: List[dd.Device]) -> None:
+def get_device_sections(app: pft.Application, devices: List[ast.Device]) -> None:
     """
     Partition network into protection sections for each device.
 
@@ -302,21 +302,21 @@ def get_device_sections(app: pft.Application, devices: List[dd.Device]) -> None:
     for device in devices:
         section_terms = sectioned_terms[device.term]
         dataclass_terms = [
-            dd.initialise_term_dataclass(elmterm)
+            ast.initialise_term_dataclass(elmterm)
             for elmterm in section_terms
         ]
         device.sect_terms = dataclass_terms
 
         section_loads = sectioned_loads[device.term]
         dataclass_loads = [
-            dd.initialise_load_dataclass(elmlod)
+            ast.initialise_load_dataclass(elmlod)
             for elmlod in section_loads
         ]
         device.sect_loads = dataclass_loads
 
         section_lines = sectioned_lines[device.term]
         dataclass_lines = [
-            dd.initialise_line_dataclass(
+            ast.initialise_line_dataclass(
                 elmlne, oh_lines=oh_lines_set
             )
             for elmlne in section_lines
@@ -345,7 +345,7 @@ _TERMINAL_FL_ATTR = {
 
 
 def terminal_fls(
-    devices: List[dd.Device],
+    devices: List[ast.Device],
     bound: str,
     f_type: str
 ) -> None:
@@ -384,7 +384,7 @@ def terminal_fls(
 def append_floating_terms(
     app: pft.Application,
     external_grid: Dict,
-    devices: List[dd.Device],
+    devices: List[ast.Device],
     floating_terms: Dict,
     consider_prot: str
 ) -> None:
@@ -413,7 +413,7 @@ def append_floating_terms(
             else:
                 ppro = 99
 
-            termination = dd.initialise_term_dataclass(elmterm)
+            termination = ast.initialise_term_dataclass(elmterm)
 
             # Run fault studies at the line location
             study_configs = [
@@ -542,7 +542,7 @@ def reset_min_source_imp(new_grid_data: Dict,
                 )
 
 
-def copy_min_fls(devices: List[dd.Device]) -> None:
+def copy_min_fls(devices: List[ast.Device]) -> None:
     """
     Copy minimum fault levels to system normal minimum fields.
 
@@ -563,7 +563,7 @@ def copy_min_fls(devices: List[dd.Device]) -> None:
             terminal.min_sn_fl_2ph = terminal.min_fl_2ph
 
 
-def update_device_data(region: str, devices: List[dd.Device]) -> None:
+def update_device_data(region: str, devices: List[ast.Device]) -> None:
     """
     Populate device-level fault current summaries from section data.
 
@@ -613,7 +613,7 @@ def update_device_data(region: str, devices: List[dd.Device]) -> None:
         try:
             max_ds_tr = max_ds_trs[0]
         except IndexError:
-            max_ds_tr = dd.initialise_load_dataclass(None)
+            max_ds_tr = ast.initialise_load_dataclass(None)
 
         # Find transformer with highest fault level
         max_fl_pg = 0
@@ -673,7 +673,7 @@ def update_device_data(region: str, devices: List[dd.Device]) -> None:
 def update_line_data(
     app: pft.Application,
     region: str,
-    devices: List[dd.Device]
+    devices: List[ast.Device]
 ) -> None:
     """
     Populate line fault current data for conductor damage assessment.
@@ -740,7 +740,7 @@ def update_line_data(
 
                 line_ds_terms = [
                     obj for obj in down_objs
-                    if obj.GetClassName() == dd.ElementType.TERM.value
+                    if obj.GetClassName() == ast.ElementType.TERM.value
                 ]
 
                 # Calculate minimum fault currents

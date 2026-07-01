@@ -1,5 +1,5 @@
 """
-Protection device domain model for protection assessment.
+Protection device assets model for protection assessment.
 
 A device represents a protection element (relay or fuse) with its
 electrical context, fault current data, and network topology.
@@ -8,7 +8,7 @@ electrical context, fault current data, and network topology.
 from dataclasses import dataclass, field
 from typing import Any, List, Optional, TYPE_CHECKING
 
-from domain.enums import ElementType, ph_attr_lookup
+from assets.enums import ElementType, ph_attr_lookup
 
 if TYPE_CHECKING:
     from pf_config import pft

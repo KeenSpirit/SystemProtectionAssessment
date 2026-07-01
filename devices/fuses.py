@@ -20,9 +20,9 @@ from typing import Optional, List
 
 from devices import fuse_mapping as fm
 import pf_protection_helper as helper
-import domain as dd
+import assets as ast
 reload(fm)
-reload(dd)
+reload(ast)
 
 
 def get_all_fuses(app: pft.Application) -> List[pft.RelFuse]:
@@ -68,8 +68,8 @@ def get_all_fuses(app: pft.Application) -> List[pft.RelFuse]:
 
 def create_fuse(
         app: pft.Application,
-        ds_tr: Optional[dd.Tfmr],
-        tr_term_dataclass: dd.Termination,
+        ds_tr: Optional[ast.Tfmr],
+        tr_term_dataclass: ast.Termination,
         sys_volts: str
 ) -> List[pft.RelFuse]:
     """
@@ -123,8 +123,8 @@ def create_fuse(
 
 def get_fuse_element(
         app: pft.Application,
-        tfmr: dd.Tfmr,
-        tr_term_dataclass: dd.Termination,
+        tfmr: ast.Tfmr,
+        tr_term_dataclass: ast.Termination,
         system_volts: str
 ) -> Optional[pft.TypFuse]:
     """
@@ -169,9 +169,9 @@ def get_fuse_element(
     region = helper.obtain_region(app)
     term = tr_term_dataclass
     if region == 'SEQ':
-        if term.constr == dd.ConstructionType.SWER.value:
+        if term.constr == ast.ConstructionType.SWER.value:
             fuse_string = _safe_string(fm.ex_SWER_f_sizes, tfmr.load_kva)
-        elif term.constr == dd.ConstructionType.OVERHEAD.value:
+        elif term.constr == ast.ConstructionType.OVERHEAD.value:
             # OH fuse
             if term.phases == 1:
                 fuse_string = _safe_string(fm.ex_pole_1p_fuses, tfmr.load_kva)
@@ -194,7 +194,7 @@ def get_fuse_element(
     else:    # region == 'Regional Models':
         fuse_types = f_types(app, 0)
         term_volts = round(term.l_l_volts, 2)
-        if term.constr == dd.ConstructionType.SWER.value:
+        if term.constr == ast.ConstructionType.SWER.value:
             if tfmr.load_kva >= 100:
                 # SWER isolating transformer
                 if round(term_volts) == 11 and round(system_volts) == 11:
