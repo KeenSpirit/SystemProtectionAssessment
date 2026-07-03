@@ -108,10 +108,15 @@ def app_manager(
 
         yield app
 
+
     finally:
+        echo = app.GetFromStudyCase('ComEcho')
+        echo.iopt_err = True
+        echo.iopt_wrng = True
+        echo.iopt_info = True
+        echo.iopt_oth = True
         app.EchoOn()
         app.SetGuiUpdateEnabled(1)
-        app.SetUserBreakEnabled(0)
 
         if app.IsWriteCacheEnabled():
             app.WriteChangesToDb()
