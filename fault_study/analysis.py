@@ -111,19 +111,15 @@ def get_line_current(elmlne: pft.ElmLne) -> Optional[float]:
     """
     currents = []
 
-    if elmlne.HasAttribute('bus1'):
-        currents.extend([
-            elmlne.GetAttribute('m:Ikss:bus1:A'),
-            elmlne.GetAttribute('m:Ikss:bus1:B'),
-            elmlne.GetAttribute('m:Ikss:bus1:C')
-        ])
-
-    if elmlne.HasAttribute('bus2'):
-        currents.extend([
-            elmlne.GetAttribute('m:Ikss:bus2:A'),
-            elmlne.GetAttribute('m:Ikss:bus2:B'),
-            elmlne.GetAttribute('m:Ikss:bus2:C')
-        ])
+    # Probe the result variables themselves, not the connection
+    # attribute: 'bus1' exists on every line regardless of whether
+    # short-circuit results do, and single/two-phase lines have no
+    # B/C phase result variables at all.
+    for side in ('bus1', 'bus2'):
+        for phase in ('A', 'B', 'C'):
+            attribute = f'm:Ikss:{side}:{phase}'
+            if elmlne.HasAttribute(attribute):
+                currents.append(elmlne.GetAttribute(attribute))
 
     return round(max(currents) * 1000) if currents else None
 

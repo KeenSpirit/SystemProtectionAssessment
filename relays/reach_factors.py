@@ -29,6 +29,12 @@ if TYPE_CHECKING:
     from assets.termination import Termination
     from assets.line import Line
 
+# Fuse pickup is taken as twice the fuse rated current: the fuse
+# minimum-melt characteristic sits well above rating, and this factor
+# approximates the effective pickup used for reach-factor comparison
+# against relay elements.
+FUSE_PICKUP_RATING_FACTOR = 2
+
 
 def device_reach_factors(
     region: str,
@@ -124,8 +130,8 @@ def determine_pickup_values(
     Determine the effective pickup values for a protection device.
 
     For relays, extracts the highest pickup setting from each protection
-    function category. For fuses, applies a fuse factor of 2x rated
-    current.
+    function category. For fuses, applies a fuse factor of FUSE_PICKUP_RATING_FACTOR
+    x rated current.
 
     Args:
         device_pf: PowerFactory protection device (ElmRelay or RelFuse).
@@ -143,10 +149,10 @@ def determine_pickup_values(
         >>> ph, ef, nps = pickups
         >>> print(f"Phase: {ph}A, Earth: {ef}A, NPS: {nps}A")
     """
-    # Fuse handling - apply factor of 2
+    # Fuse handling - apply factor of FUSE_PICKUP_RATING_FACTOR
     if device_pf.GetClassName() == ElementType.FUSE.value:
         fuse_size = int(device_pf.GetAttribute("r:typ_id:e:irat"))
-        return [fuse_size * 2, fuse_size * 2, 0]
+        return [fuse_size * FUSE_PICKUP_RATING_FACTOR , fuse_size * FUSE_PICKUP_RATING_FACTOR , 0]
 
     elements = get_prot_elements(device_pf)
 

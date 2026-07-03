@@ -28,6 +28,10 @@ Functions:
 
 from typing import List, Dict, Union
 
+import logging
+
+logger = logging.getLogger(__name__)
+
 from pf_config import pft
 import pf_protection_helper as helper
 from fault_study import analysis, study_templates, fault_impedance
@@ -70,7 +74,7 @@ def fault_study(
         Minimum studies: 3-Phase, 2-Phase, Ground, Ground Z10, Ground Z50
         System normal minimum: 2-Phase, Ground, Ground Z10, Ground Z50
     """
-    app.PrintPlain(f"Performing fault level study for {feeder.obj.loc_name}...")
+    logger.info(f"Fault level study: {feeder.obj.loc_name}")
 
     # Build device topology
     get_downstream_objects(app, region, feeder.devices)
@@ -104,11 +108,17 @@ def fault_study(
     if grid_equivalence_check(external_grid):
         copy_min_fls(feeder.devices)
     else:
+        # Grid impedances are mutated for the SN-min studies; the
+        # finally guarantees restoration even if a study raises, so
+        # an aborted feeder cannot leave the model with system-normal
+        # source impedances (SetAttribute persists immediately).
         reset_min_source_imp(external_grid, sys_norm_min=True)
-        for bound, fault_type in sn_study_configs:
-            analysis.short_circuit(app, bound, fault_type, consider_prot)
-            terminal_fls(feeder.devices, bound='SN_Min', f_type=fault_type)
-        reset_min_source_imp(external_grid, sys_norm_min=False)
+        try:
+            for bound, fault_type in sn_study_configs:
+                analysis.short_circuit(app, bound, fault_type, consider_prot)
+                terminal_fls(feeder.devices, bound='SN_Min', f_type=fault_type)
+        finally:
+            reset_min_source_imp(external_grid, sys_norm_min=False)
 
     # Determine construction types for fault impedance selection
     fault_impedance.update_node_construction(feeder.devices)
@@ -759,9 +769,9 @@ def update_line_data(
                              if term.obj in line_ds_terms]
                         )
                     except (AttributeError, ValueError):
-                        app.PrintPlain(line.obj)
-                        app.PrintPlain(f"max_lne_cub: {max_lne_cub}")
-                        app.PrintPlain(f"line_ds_terms: {line_ds_terms}")
+                        logger.info(line.obj)
+                        logger.info(f"max_lne_cub: {max_lne_cub}")
+                        logger.info(f"line_ds_terms: {line_ds_terms}")
 
                     line.min_fl_pg = min(
                         [fault_impedance.get_terminal_pg_fault(region, term)

@@ -2,16 +2,16 @@
 Conductor damage assessment result formatting for Excel output.
 
 This module formats conductor damage assessment results into a pandas
-DataFrame suitable for Excel export. It calculates allowable fault
-levels based on conductor thermal ratings and evaluates pass/fail
-status for each line section.
+DataFrame suitable for Excel export. Pass/fail status is evaluated by
+comparing the accumulated let-through energy (I²t summed across all
+trips in the auto-reclose sequence) against the conductor's thermal
+withstand energy, derived from its 1-second thermal rating.
 
 Functions:
     cond_damage_results: Format conductor damage data as DataFrame
 """
 
-import math
-from typing import List
+from typing import List, Optional
 
 import pandas as pd
 
@@ -69,12 +69,15 @@ def cond_damage_results(devices: List) -> pd.DataFrame:
             "Worst case energy ph flt clear time": [
                 line.ph_clear_time for line in device.sect_lines
             ],
-            "Allowable phase fault level": [
-                _calculate_allowable_fl(line.thermal_rating, line.ph_clear_time, trips)
+            "Total ph energy": [
+                line.ph_energy for line in device.sect_lines
+            ],
+            "Allowable energy": [
+                _allowable_energy(line.thermal_rating)
                 for line in device.sect_lines
             ],
             "Phase fault conductor damage": [
-                _evaluate_damage(line, trips, fault_type='Phase')
+                _evaluate_damage(line, fault_type='Phase')
                 for line in device.sect_lines
             ],
             "Worst case energy gnd flt lvl": [
@@ -83,12 +86,11 @@ def cond_damage_results(devices: List) -> pd.DataFrame:
             "Worst case energy gnd flt clear time": [
                 line.pg_clear_time for line in device.sect_lines
             ],
-            "Allowable ground fault level": [
-                _calculate_allowable_fl(line.thermal_rating, line.pg_clear_time, trips)
-                for line in device.sect_lines
+            "Total gnd energy": [
+                line.pg_energy for line in device.sect_lines
             ],
             "Ground fault conductor damage": [
-                _evaluate_damage(line, trips, fault_type='Ground')
+                _evaluate_damage(line, fault_type='Ground')
                 for line in device.sect_lines
             ],
         })
@@ -98,53 +100,44 @@ def cond_damage_results(devices: List) -> pd.DataFrame:
     return cond_damage_df
 
 
-def _calculate_allowable_fl(
-    thermal_rating: float,
-    clear_time: float,
-    trips: int
-) -> float:
+def _allowable_energy(thermal_rating) -> Optional[float]:
     """
-    Calculate the maximum allowable fault current for conductor protection.
+    Calculate the conductor thermal withstand energy in A²s.
 
-    Uses the I²t thermal withstand formula to determine the maximum
-    fault current that can flow for the given clearing time without
-    exceeding the conductor's thermal limit.
-
-    Formula: I_allowable = I_thermal / sqrt(t_clear × n_trips)
+    The 1-second thermal rating I_thr implies a withstand energy of
+    I_thr² × 1s (from I²t = constant).
 
     Args:
         thermal_rating: Conductor 1-second thermal rating in Amperes.
-        clear_time: Fault clearing time per trip in seconds.
-        trips: Number of trips in the auto-reclose sequence.
+            May be "NA" for cable systems.
 
     Returns:
-        Maximum allowable fault current in Amperes, rounded to nearest
-        integer. Returns None if calculation fails (e.g., zero time).
+        Withstand energy in A²s, or None if the rating is missing
+        or non-numeric.
     """
     try:
-        allowable_fl = round(thermal_rating / math.sqrt(clear_time * trips))
-    except (ValueError, ZeroDivisionError, TypeError):
-        allowable_fl = None
-    return allowable_fl
+        return float(thermal_rating) ** 2
+    except (ValueError, TypeError):
+        return None
 
 
-def _evaluate_damage(line, trips: int, fault_type: str) -> str:
+def _evaluate_damage(line, fault_type: str) -> str:
     """
     Evaluate conductor damage pass/fail status for a line section.
 
-    Compares the actual fault current against the allowable thermal
-    limit to determine if conductor damage would occur.
+    Compares the total let-through energy accumulated across ALL trips
+    in the auto-reclose sequence (populated by cond_damage) against the
+    conductor's thermal withstand energy.
 
     Args:
-        line: Line dataclass with fault current and thermal data.
-        trips: Number of trips in the auto-reclose sequence.
+        line: Line dataclass with accumulated energy and thermal data.
         fault_type: 'Phase' or 'Ground' fault evaluation.
 
     Returns:
         Assessment result string:
-        - "PASS": Fault current within thermal limits
-        - "FAIL": Fault current exceeds thermal limits
-        - "NO DATA": Missing thermal rating or clearing time
+        - "PASS": Accumulated energy within thermal withstand
+        - "FAIL": Accumulated energy exceeds thermal withstand
+        - "NO DATA": Missing thermal rating or no energy computed
         - "SWER": Phase fault on SWER line (not applicable)
     """
     # Check for SWER line - phase faults not applicable
@@ -156,20 +149,15 @@ def _evaluate_damage(line, trips: int, fault_type: str) -> str:
         except AttributeError:
             pass
 
-    thermal_rating = line.thermal_rating
-
     if fault_type == 'Phase':
-        fl = line.ph_fl
-        clear_time = line.ph_clear_time
+        energy = line.ph_energy
     else:
-        fl = line.pg_fl
-        clear_time = line.pg_clear_time
+        energy = line.pg_energy
 
-    acceptable_fl = _calculate_allowable_fl(thermal_rating, clear_time, trips)
+    allowable = _allowable_energy(line.thermal_rating)
 
-    if not acceptable_fl:
+    if allowable is None or not energy:
         return "NO DATA"
-    elif fl > acceptable_fl:
+    if energy > allowable:
         return "FAIL"
-    else:
-        return "PASS"
+    return "PASS"

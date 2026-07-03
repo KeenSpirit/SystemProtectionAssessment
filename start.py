@@ -19,6 +19,15 @@ from save_results import save_result as sr
 logger = logging.getLogger(__name__)
 
 
+class AssessmentError(RuntimeError):
+    """Raised when the active project cannot be assessed.
+
+    Signals a per-project failure (e.g. missing study case) that the
+    batch orchestrator should record and skip, rather than a fault
+    that should abort the whole batch run.
+    """
+
+
 def setup_stdout_logging(level: int = logging.INFO) -> None:
     """Ensure assessment progress is visible on the console.
 
@@ -53,20 +62,35 @@ def setup_stdout_logging(level: int = logging.INFO) -> None:
         root.addHandler(handler)
 
 
+def begin(
+    app: pft.Application,
+    output_dir: Optional[Path] = None,
+) -> Dict[str, Any]:
 
-
-def begin(app: pft.Application) -> None:
 
     setup_stdout_logging()
     logger.info("System Protection Assessment started")
 
     # Activate "All Active Grids Study Case"
     study_folder = app.GetProjectFolder("study")
+    if study_folder is None:
+        raise AssessmentError("Project has no study case folder.")
+
     all_grids_cases = study_folder.GetContents(
         "All Active Grids Study Case"
     )
+    if not all_grids_cases:
+        raise AssessmentError(
+            "Project has no 'All Active Grids Study Case' study case."
+        )
+
     int_case = all_grids_cases[0]
-    int_case.Activate()
+    error_code = int_case.Activate()
+    if error_code:
+        raise AssessmentError(
+            f"Could not activate 'All Active Grids Study Case' "
+            f"(Activate() returned {error_code})."
+        )
     logger.info("Activated 'All Active Grids Study Case'")
 
     # Get region and user inputs
@@ -75,6 +99,8 @@ def begin(app: pft.Application) -> None:
 
     radial_list, mesh_feeder = mesh_feeder_check(app)
     logger.info(f"{len(radial_list)} radial feeders detected")
+    if not radial_list:
+        raise AssessmentError("No radial feeders detected in project.")
 
     feeders_devices, bu_devices = get_feeders_devices(app, radial_list)
     chk_empty_fdrs(app, feeders_devices)
@@ -111,10 +137,19 @@ def begin(app: pft.Application) -> None:
         cd.cond_damage(app, selected_devices)
 
     logger.info("Saving results")
-    sr.save_dataframe(
-        app, region, study_selections, external_grid, feeders
+    output_file = sr.save_dataframe(
+        app, region, study_selections, external_grid, feeders,
+        output_dir=output_dir,
     )
     logger.info("System Protection Assessment complete")
+
+    return {
+        "project": app.GetActiveProject().loc_name,
+        "region": region,
+        "radial_feeders_detected": len(radial_list),
+        "feeders_assessed": len(feeders),
+        "output_file": output_file,
+    }
 
 
 def mesh_feeder_check(app) -> Tuple[List[str], bool]:
@@ -131,7 +166,7 @@ def mesh_feeder_check(app) -> Tuple[List[str], bool]:
             - radial_list: Sorted list of radial feeder names.
             - mesh_feeder_check: True if any lines are out of service.
     """
-    app.PrintPlain("Checking for radial feeders...")
+    logger.info("Checking for radial feeders...")
     grids = [
             grid for grid in app.GetCalcRelevantObjects('*.ElmXnet')
             if grid.outserv == 0
@@ -154,9 +189,9 @@ def mesh_feeder_check(app) -> Tuple[List[str], bool]:
             radial_list.append(feeder.loc_name )
 
     if radial_list:
-        app.PrintPlain("Radial feeders detected.")
+        logger.info("Radial feeders detected.")
     else:
-        app.PrintPlain(" No radial feeders detected.")
+        logger.warning(" No radial feeders detected.")
 
     mesh_feeder_check = False
     if mesh_list:
@@ -199,7 +234,20 @@ def get_grid_data(app, grids: List) -> Dict:
 
         if master_grid:
             grid_prw = master_grid.GetAttribute('snssmin')
-            ikssmin = grid_prw / (11 * math.sqrt(3))
+            # Convert snssmin (MVA) to kA at the grid's connected
+            # nominal voltage: I = S / (sqrt(3) * U_LL).
+            try:
+                uknom = grid.bus1.cterm.uknom
+            except AttributeError:
+                uknom = None
+            if not uknom or uknom <= 0:
+                logger.warning(
+                    f"Could not determine nominal voltage for grid "
+                    f"{grid_loc_name}; assuming 11 kV for system normal "
+                    f"minimum conversion."
+                )
+                uknom = 11
+            ikssmin = grid_prw / (uknom * math.sqrt(3))
             master_grid_attr = [
                 'rntxnmin', 'z2tz1min', 'x0tx1min', 'r0tx0min'
             ]
@@ -210,7 +258,7 @@ def get_grid_data(app, grids: List) -> Dict:
             grid_data[grid].extend(master_grid_imp)
 
         if len(grid_data[grid]) == 10:
-            app.PrintPlain(
+            logger.warning(
                 f'Could not find system normal source impedance '
                 f'for {grid}...'
             )
@@ -254,8 +302,9 @@ def get_master_grid(app, grid_loc_name: str):
                     )
                     return master_proj_grids
 
-    app.PrintPlain(
-        f'Could not find master grid data for {grid_loc_name}.'
+    logger.warning(
+        f"Could not find master grid data for {grid_loc_name}; "
+        f"system normal minimum fault levels will fall back to defaults"
     )
     return False
 
@@ -289,31 +338,50 @@ def get_feeders_devices(app, radial_list: List[str]
         if grid.bus1 is not None
     }
 
+    # Precompute each feeder's element set once.
+    feeder_elements = {}
+    for feeder_name in radial_list:
+        feeder_objs = app.GetCalcRelevantObjects(feeder_name + ".ElmFeeder")
+        if not feeder_objs:
+            logger.warning(
+                f"Feeder {feeder_name} could not be retrieved; no devices "
+                f"will be mapped to it"
+            )
+            continue
+        feeder_elements[feeder_name] = set(feeder_objs[0].GetAll())
+
     for device in devices:
         term = device.cbranch
-        feeder = [
-            feeder for feeder in radial_list
-            if term in app.GetCalcRelevantObjects(
-                feeder + ".ElmFeeder"
-            )[0].GetAll()
-        ]
-        if feeder:
-            feeder_device_dict[feeder[0]].append(device)
+        matched_feeder = next(
+            (
+                name for name, elems in feeder_elements.items()
+                if term in elems
+            ),
+            None,
+        )
+        if matched_feeder:
+            feeder_device_dict[matched_feeder].append(device)
             continue
 
+        grid_terms = {}
         for grid in grid_device_dict:
             try:
                 grid_term = grid.bus1.cterm
-                grid_term.SetAttribute("iUsage", 0)
-                if grid_term == device.cn_bus:
-                    grid_device_dict[grid].append(device)
-                    break
             except AttributeError:
+                grid_term = None
+            if grid_term is None:
                 logger.warning(
                     f"Grid {getattr(grid, 'loc_name', grid)} has no usable "
-                    "bus1.cterm; skipping backup mapping for this grid"
+                    "bus1.cterm; no backup devices will be mapped to it"
                 )
                 continue
+            grid_term.SetAttribute("iUsage", 0)
+            grid_terms[grid] = grid_term
+
+        for grid, grid_term in grid_terms.items():
+            if grid_term == device.cn_bus:
+                grid_device_dict[grid].append(device)
+                break
 
     return feeder_device_dict, grid_device_dict
 
@@ -322,14 +390,19 @@ def chk_empty_fdrs(app, fdrs_devices: Dict) -> None:
     """
     Check that selected feeders have protection devices.
 
-    Validates that at least one feeder has devices and removes
-    empty feeders from the selection with warnings.
+    Removes feeders with no protection devices from the selection,
+    logging a warning for each. If NO feeder has any devices, raises
+    AssessmentError so the caller skips the project cleanly instead
+    of producing an empty results workbook.
 
     Args:
-        fdrs_devices: Dict of feeder names to device lists.
+        app: PowerFactory application instance. Retained for call-site
+            compatibility; no longer used directly.
+        fdrs_devices: Dict mapping feeder names to device lists.
+            Mutated in place: empty feeders are removed.
 
     Raises:
-        SystemExit: If no feeders have any protection devices.
+        AssessmentError: If no feeder has any protection devices.
     """
     empty_feeders = [
         feeder for feeder, devices in fdrs_devices.items()
@@ -337,18 +410,15 @@ def chk_empty_fdrs(app, fdrs_devices: Dict) -> None:
     ]
 
     if len(empty_feeders) == len(fdrs_devices):
-        app.PrintError(
-            "No protection devices were detected in the model for the "
-            "selected feeders. \n"
-            "Please add and configure the required protection devices "
-            "and re-run the script."
+        raise AssessmentError(
+            "No protection devices detected in the model for any "
+            "selected feeder."
         )
 
     for empty_feeder in empty_feeders:
-        app.PrintWarn(
-            f"No protection devices were detected in the model for "
-            f"feeder {empty_feeder}. \n"
-            "This feeder will be excluded from the study."
+        logger.warning(
+            f"No protection devices detected for feeder {empty_feeder}; "
+            f"it will be excluded from the study."
         )
         del fdrs_devices[empty_feeder]
 

@@ -29,6 +29,16 @@ from pf_config import pft
 from relays import current_conversion, elements, reclose
 from assets.enums import ElementType
 
+logger = logging.getLogger(__name__)
+
+# Fault-current resolution (A) for the worst-case energy search.
+# fault_clear_times evaluates clearing time at each fault level from
+# line minimum to maximum in steps of this size; the step that yields
+# the greatest I2t is reported. Smaller = finer peak detection but
+# proportionally more PF curve evaluations per line per trip. 10 A is
+# the validated production value; raising it is the first lever if
+# conductor-damage runtime dominates a batch run.
+FL_STEP_AMPS = 10
 
 # =============================================================================
 # MAIN ENTRY POINT
@@ -67,7 +77,7 @@ def cond_damage(app: pft.Application, devices: List) -> None:
         ...     for line in device.sect_lines:
         ...         print(f"{line.obj.loc_name}: {line.ph_energy} A²s")
     """
-    fl_step = 10
+    fl_step = FL_STEP_AMPS
 
     for device in devices:
         dev_obj = device.obj
@@ -76,77 +86,96 @@ def cond_damage(app: pft.Application, devices: List) -> None:
 
         # Phase fault assessment
         line_fault_type = '2-Phase'
-        app.PrintPlain(
-            f"Performing phase fault conductor damage assessment "
-            f"for {dev_obj.loc_name}..."
+        logger.info(
+            f"Phase fault conductor damage assessment: {dev_obj.loc_name}"
         )
-
         for line in lines:
             reclose.reset_reclosing(dev_obj)
             trip_count = 1
             total_energy = 0
+            worst_trip_energy = 0
 
             while trip_count <= total_trips:
                 block_service_status = reclose.set_enabled_elements(dev_obj)
-                min_fl_clear_times, _ = fault_clear_times(
-                    app, device, line, fl_step, line_fault_type
-                )
-                max_energy, max_fl, max_clear_time = worst_case_energy(
-                    line, min_fl_clear_times, line_fault_type, device,False
-                )
-
-                reclose.reset_block_service_status(block_service_status)
-                trip_count  = reclose.trip_count(dev_obj, increment=True)
+                try:
+                    min_fl_clear_times, _ = fault_clear_times(
+                        app, device, line, fl_step, line_fault_type
+                    )
+                    max_energy, max_fl, max_clear_time = worst_case_energy(
+                        line, min_fl_clear_times, line_fault_type, device, False
+                    )
+                finally:
+                    reclose.reset_block_service_status(block_service_status)
                 total_energy += max_energy
 
                 if max_clear_time is not None:
-                    line.ph_clear_time = max_clear_time
-                    line.ph_fl = max_fl
+                    # Record the fl / clear time of the trip contributing
+                    # the most energy, matching the "worst case energy"
+                    # column labels in the results output.
+                    if max_energy > worst_trip_energy:
+                        worst_trip_energy = max_energy
+                        line.ph_clear_time = max_clear_time
+                        line.ph_fl = max_fl
                 else:
                     logging.info(
-                        f"{dev_obj.loc_name} {line_fault_type} trip {trip_count} "
-                                 f"fault clearing time calculation error."
+                        f"{dev_obj.loc_name} {line_fault_type} trip "
+                        f"{trip_count} fault clearing time calculation "
+                        f"error."
                     )
+
+                trip_count = reclose.trip_count(dev_obj, increment=True)
 
             line.ph_energy = total_energy
 
         # Earth fault assessment
         line_fault_type = 'Phase-Ground'
-        app.PrintPlain(
-            f"Performing earth fault conductor damage assessment "
-            f"for {dev_obj.loc_name}..."
+        logger.info(
+            f"Earth fault conductor damage assessment: {dev_obj.loc_name}"
         )
         for line in lines:
             reclose.reset_reclosing(dev_obj)
             trip_count = 1
             total_energy = 0
+            worst_trip_energy = 0
             while trip_count <= total_trips:
                 block_service_status = reclose.set_enabled_elements(dev_obj)
-                min_fl_clear_times, device_fault_type = fault_clear_times(
-                    app, device, line, fl_step, line_fault_type
-                )
+                try:
+                    min_fl_clear_times, device_fault_type = fault_clear_times(
+                        app, device, line, fl_step, line_fault_type
+                    )
 
-                # Check if SWER transformation was applied
-                transposition = (line_fault_type != device_fault_type)
+                    # Check if SWER transformation was applied
+                    transposition = (line_fault_type != device_fault_type)
 
-                max_energy, max_fl, max_clear_time = worst_case_energy(
-                    line, min_fl_clear_times, line_fault_type, device, transposition
-                )
-
-                reclose.reset_block_service_status(block_service_status)
-                trip_count  = reclose.trip_count(dev_obj, increment=True)
+                    max_energy, max_fl, max_clear_time = worst_case_energy(
+                        line, min_fl_clear_times, line_fault_type, device, transposition
+                    )
+                finally:
+                    reclose.reset_block_service_status(block_service_status)
                 total_energy += max_energy
 
                 if max_clear_time is not None:
-                    line.pg_clear_time = max_clear_time
-                    line.pg_fl = max_fl
+                    # Record the fl / clear time of the trip contributing
+                    # the most energy, matching the "worst case energy"
+                    # column labels in the results output.
+                    if max_energy > worst_trip_energy:
+                        worst_trip_energy = max_energy
+                        line.pg_clear_time = max_clear_time
+                        line.pg_fl = max_fl
                 else:
                     logging.info(
-                        f"{dev_obj.loc_name} {line_fault_type} trip {trip_count} "
-                                 f"fault clearing time calculation error."
+                        f"{dev_obj.loc_name} {line_fault_type} trip "
+                        f"{trip_count} fault clearing time calculation "
+                        f"error."
                     )
 
+                trip_count = reclose.trip_count(dev_obj, increment=True)
+
             line.pg_energy = total_energy
+
+            # Leave the recloser at trip 1 rather than trips+1 so the
+            # assessment does not persist counter drift into the model.
+            reclose.reset_reclosing(dev_obj)
 
 
 # =============================================================================
@@ -189,7 +218,7 @@ def fault_clear_times(
             f"{device.obj.loc_name} {fault_type} conductor damage "
             f"skipped: missing line fault level data."
         )
-    return {}, fault_type
+        return {}, fault_type
 
     if fault_type in ['2-Phase', '3-Phase']:
         min_fl = line.min_fl_2ph

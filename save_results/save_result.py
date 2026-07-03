@@ -27,6 +27,10 @@ import re
 import time
 from typing import Any, Dict, List, Optional
 
+import logging
+
+logger = logging.getLogger(__name__)
+
 import numpy as np
 import pandas as pd
 from openpyxl import load_workbook
@@ -61,7 +65,7 @@ def _resolve_output_path(app: pft.Application) -> Path:
     experiences a transient network fault during the probe.
 
     When the fallback is triggered by an OSError, a warning is
-    surfaced via ``app.PrintWarn`` to alert the user that files will
+    surfaced via ``logger.warning`` to alert the user that files will
     be written inside the Citrix session and may not persist after
     logoff.
 
@@ -89,7 +93,7 @@ def _resolve_output_path(app: pft.Application) -> Path:
         # network errors that Path.exists() does not swallow.
         basepath_exists = False
         probe_failed = True
-        app.PrintWarn(
+        logger.warning(
             f"Citrix client path '{basepath}' could not be probed "
             f"({err}). Falling back to local path. If running via "
             f"Citrix, output files will be written inside the Citrix "
@@ -107,7 +111,7 @@ def _resolve_output_path(app: pft.Application) -> Path:
     # user is likely on a local install). If the probe raised, the
     # warning above has already been emitted.
     if not probe_failed and not local_path.exists():
-        app.PrintWarn(
+        logger.warning(
             f"Local output path '{local_path}' does not exist. "
             f"The results file may fail to save."
         )
@@ -123,8 +127,9 @@ def save_dataframe(
     region: str,
     study_selections: List[str],
     external_grid: Dict,
-    feeders: List
-) -> None:
+    feeders: List,
+    output_dir: Optional[Path] = None,
+) -> str:
     """
     Save protection assessment results to an Excel workbook.
 
@@ -160,17 +165,26 @@ def save_dataframe(
     except AttributeError:
         project_version = 'NA'
 
-    app.PrintPlain("Saving Fault Level Study...")
+    logger.info("Saving Fault Level Study...")
 
-    # Generate filename with timestamp
+    # Generate filename with timestamp. The project name (not the
+    # study case) provides file identity: in batch runs the study
+    # case is 'All Active Grids Study Case' for every project, so
+    # it distinguishes nothing. The study case is still recorded on
+    # the General Information sheet.
     date_string = time.strftime("%Y%m%d-%H%M%S")
     study_case_name = app.GetActiveStudyCase().loc_name
-    filename = f'Fault Study Results {study_case_name} {date_string}.xlsx'
-    filename = fix_string(filename)
+    filename = fix_string(
+        f'Fault Study Results {project.loc_name} {date_string}.xlsx'
+    )
 
-    # Determine output path (guarded against Citrix client drive
-    # mapping failures)
-    clientpath = _resolve_output_path(app)
+    # Output path: injected directory (batch) or the legacy
+    # Citrix/local per-user probe (interactive).
+    if output_dir is not None:
+        clientpath = Path(output_dir)
+        clientpath.mkdir(parents=True, exist_ok=True)
+    else:
+        clientpath = _resolve_output_path(app)
 
     filepath = os.path.join(clientpath, filename)
 
@@ -312,7 +326,8 @@ def save_dataframe(
                     adjust_cond_damage_col_width(ws)
 
     wb.save(filepath)
-    app.PrintPlain("Output file saved to " + filepath)
+    logger.info(f"Output file saved to {filepath}")
+    return filepath
 
 
 def _write_general_info(
