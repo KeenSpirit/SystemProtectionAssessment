@@ -68,30 +68,32 @@ def begin(
     output_dir: Optional[Path] = None,
 ) -> Dict[str, Any]:
 
-
     setup_stdout_logging()
     logger.info("System Protection Assessment started")
 
-    # Activate "All Active Grids Study Case"
-    study_folder = app.GetProjectFolder("study")
-    if study_folder is None:
-        raise AssessmentError("Project has no study case folder.")
+    active_study_case = app.GetActiveStudyCase()
+    logger.info(f"study case: {active_study_case}")
+    if (active_study_case is None
+            or active_study_case.loc_name != "All Active Grids Study Case"):
+        # Activate "All Active Grids Study Case"
+        study_folder = app.GetProjectFolder("study")
+        if study_folder is None:
+            raise AssessmentError("Project has no study case folder.")
 
-    all_grids_cases = study_folder.GetContents(
-        "All Active Grids Study Case"
-    )
-    if not all_grids_cases:
-        raise AssessmentError(
-            "Project has no 'All Active Grids Study Case' study case."
+        all_grids_cases = study_folder.GetContents(
+            "All Active Grids Study Case"
         )
-
-    int_case = all_grids_cases[0]
-    error_code = int_case.Activate()
-    if error_code:
-        raise AssessmentError(
-            f"Could not activate 'All Active Grids Study Case' "
-            f"(Activate() returned {error_code})."
-        )
+        if not all_grids_cases:
+            raise AssessmentError(
+                "Project has no 'All Active Grids Study Case' study case."
+            )
+        int_case = all_grids_cases[0]
+        error_code = int_case.Activate()
+        if error_code:
+            raise AssessmentError(
+                f"Could not activate 'All Active Grids Study Case' "
+                f"(Activate() returned {error_code})."
+            )
     logger.info("Activated 'All Active Grids Study Case'")
 
     # Get region and user inputs
@@ -118,7 +120,7 @@ def begin(
     feeders = cvrt_fdr_to_dataclass(app, feeders_devices, bu_devices)
     logger.info(f"{len(feeders)} feeders to assess")
 
-    study_selections = ["Fault Level Study (all relays configured in model)", 'Conductor Damage Assessment']
+    study_selections = ["Fault Level Study (all relays configured in model)"]
     # Process each feeder
     for i, feeder in enumerate(feeders, start=1):
         name = getattr(feeder.obj, "loc_name", str(feeder.obj))
@@ -131,11 +133,11 @@ def begin(
             app, external_grid, region, feeder, study_selections
         )
 
-        selected_devices = [
-            device for device in feeder.devices]
-
-        logger.info(f"[{i}/{len(feeders)}] {name}: conductor damage")
-        cd.cond_damage(app, selected_devices)
+        if "Conductor Damage Assessment" in study_selections:
+            selected_devices = [
+                device for device in feeder.devices]
+            logger.info(f"[{i}/{len(feeders)}] {name}: conductor damage")
+            cd.cond_damage(app, selected_devices)
 
     logger.info("Saving results")
     output_file = sr.save_dataframe(

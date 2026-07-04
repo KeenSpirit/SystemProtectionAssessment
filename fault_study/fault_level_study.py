@@ -111,7 +111,7 @@ def fault_study(
         # Grid impedances are mutated for the SN-min studies; the
         # finally guarantees restoration even if a study raises, so
         # an aborted feeder cannot leave the model with system-normal
-        # source impedances (SetAttribute persists immediately).
+        # source impedances.
         reset_min_source_imp(external_grid, sys_norm_min=True)
         try:
             for bound, fault_type in sn_study_configs:

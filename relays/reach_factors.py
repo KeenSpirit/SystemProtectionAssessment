@@ -422,28 +422,28 @@ def _calculate_backup_reach_factors(
             'bu_nps_ph_rf': ['NA'] * num_elements,
         }
 
-        # Find the lowest configured pickup setting among all backup
-        # devices. determine_pickup_values returns 0 for a function that
-        # is not configured, so only positive values are treated as
-        # candidates; this makes the result independent of the order in
-        # which backup devices are iterated. Falls back to 0 when no
-        # backup device has the function configured.
-        ef_candidates = []
-        ph_candidates = []
-        nps_candidates = []
+    # Find the lowest configured pickup setting among all backup
+    # devices. determine_pickup_values returns 0 for a function that
+    # is not configured, so only positive values are treated as
+    # candidates; this makes the result independent of the order in
+    # which backup devices are iterated. Falls back to 0 when no
+    # backup device has the function configured.
+    ef_candidates = []
+    ph_candidates = []
+    nps_candidates = []
 
-        for bu_device in device.us_devices:
-            bu_ph, bu_ef, bu_nps = determine_pickup_values(bu_device.obj)
-            if bu_ef > 0:
-                ef_candidates.append(bu_ef)
-            if bu_ph > 0:
-                ph_candidates.append(bu_ph)
-            if bu_nps > 0:
-                nps_candidates.append(bu_nps)
+    for bu_device in device.us_devices:
+        bu_ph, bu_ef, bu_nps = determine_pickup_values(bu_device.obj)
+        if bu_ef > 0:
+            ef_candidates.append(bu_ef)
+        if bu_ph > 0:
+            ph_candidates.append(bu_ph)
+        if bu_nps > 0:
+            nps_candidates.append(bu_nps)
 
-        bu_ef_pickup = min(ef_candidates) if ef_candidates else 0
-        bu_ph_pickup = min(ph_candidates) if ph_candidates else 0
-        bu_nps_pickup = min(nps_candidates) if nps_candidates else 0
+    bu_ef_pickup = min(ef_candidates) if ef_candidates else 0
+    bu_ph_pickup = min(ph_candidates) if ph_candidates else 0
+    bu_nps_pickup = min(nps_candidates) if nps_candidates else 0
 
     # Effective backup earth fault pickup
     effective_bu_ef_pickup = _calculate_effective_ef_pickup(

@@ -14,7 +14,6 @@ assumptions for earth faults:
 
 from typing import List
 from pf_config import pft
-from assets.constants import GROUND_FAULT_IMPEDANCE_OHMS
 import assets as ast
 
 
