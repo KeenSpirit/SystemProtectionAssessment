@@ -57,7 +57,8 @@ def setup_stdout_logging(level: int = logging.INFO) -> None:
         handler.setLevel(level)
         handler.setFormatter(
             logging.Formatter(
-                "%(asctime)s: %(module)s: Line: %(lineno)d: %(message)s"
+                "%(asctime)s: %(module)s: Line: %(lineno)d: %(message)s",
+                datefmt="%Y-%m-%d %H:%M:%S%z",
             )
         )
         root.addHandler(handler)

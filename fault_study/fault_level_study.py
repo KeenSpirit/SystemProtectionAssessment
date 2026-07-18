@@ -75,7 +75,6 @@ def fault_study(
         System normal minimum: 2-Phase, Ground, Ground Z10, Ground Z50
     """
     logger.info(f"Fault level study: {feeder.obj.loc_name}")
-    logger.info(f"Write cache enabled: {app.IsWriteCacheEnabled()}")
 
     # Build device topology
     get_downstream_objects(app, region, feeder.devices)
