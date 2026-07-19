@@ -443,6 +443,12 @@ def append_floating_terms(
                     location=line, relative=ppro
                 )
                 current = analysis.get_line_current(line)
+                if current is None:
+                    logger.warning(
+                        f"Floating terminal fault study returned no result: "
+                        f"{elmterm.loc_name} on line {line.loc_name} "
+                        f"({bound} {fault_type}); value left as None"
+                    )
                 setattr(termination, attribute, current)
 
             # Handle system normal minimum
@@ -465,6 +471,12 @@ def append_floating_terms(
                         location=line, relative=ppro
                     )
                     current = analysis.get_line_current(line)
+                    if current is None:
+                        logger.warning(
+                            f"Floating terminal fault study returned no result: "
+                            f"{elmterm.loc_name} on line {line.loc_name} "
+                            f"({bound} {fault_type}); value left as None"
+                        )
                     setattr(termination, attribute, current)
                 reset_min_source_imp(external_grid, sys_norm_min=False)
 
@@ -588,19 +600,16 @@ def update_device_data(region: str, devices: List[ast.Device]) -> None:
         Sets fault current attributes and max_ds_tr on each device.
         Sorts sect_terms by min_fl_pg descending.
     """
+
     def _safe_max(sequence: List) -> Union[int, float]:
-        """Return maximum value or 0 if sequence is empty."""
-        try:
-            return max(sequence)
-        except ValueError:
-            return 0
+        """Return maximum of non-None values, or 0 if none exist."""
+        values = [v for v in sequence if v is not None]
+        return max(values) if values else 0
 
     def _safe_min(sequence: List) -> Union[int, float]:
-        """Return minimum value or 0 if sequence is empty."""
-        try:
-            return min(sequence)
-        except ValueError:
-            return 0
+        """Return minimum of non-None values, or 0 if none exist."""
+        values = [v for v in sequence if v is not None]
+        return min(values) if values else 0
 
     for device in devices:
         # Find largest downstream transformer
@@ -653,23 +662,25 @@ def update_device_data(region: str, devices: List[ast.Device]) -> None:
         )
         device.min_fl_3ph = _safe_min(
             [term.min_fl_3ph for term in device.sect_terms
-             if term.min_fl_3ph > 0]
+             if term.min_fl_3ph and term.min_fl_3ph > 0]
         )
         device.min_fl_2ph = _safe_min(
             [term.min_fl_2ph for term in device.sect_terms
-             if term.min_fl_2ph > 0]
+             if term.min_fl_2ph and term.min_fl_2ph > 0]
         )
         device.min_fl_pg = _safe_min(
             [fault_impedance.get_terminal_pg_fault(region, term)
-             for term in device.sect_terms if term.min_fl_pg > 0]
+             for term in device.sect_terms if term.min_fl_pg
+             and term.min_fl_pg > 0]
         )
         device.min_sn_fl_2ph = _safe_min(
             [term.min_sn_fl_2ph for term in device.sect_terms
-             if term.min_sn_fl_2ph > 0]
+             if term.min_sn_fl_2ph and term.min_sn_fl_2ph > 0]
         )
         device.min_sn_fl_pg = _safe_min(
             [fault_impedance.get_terminal_pg_fault(region, term, True)
-             for term in device.sect_terms if term.min_sn_fl_pg > 0]
+             for term in device.sect_terms if term.min_sn_fl_pg
+             and term.min_sn_fl_pg > 0]
         )
 
         # Sort terminals by minimum fault level
