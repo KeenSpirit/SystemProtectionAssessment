@@ -591,6 +591,12 @@ def _line_safe_min(sequence) -> Union[int, float]:
     return min(values) if values else 0
 
 
+def _line_safe_min(sequence) -> Union[int, float]:
+    """Return minimum of non-None values, or 0 if none exist."""
+    values = [v for v in sequence if v is not None]
+    return min(values) if values else 0
+
+
 def update_device_data(region: str, devices: List[ast.Device]) -> None:
     """
     Populate device-level fault current summaries from section data.
@@ -744,26 +750,31 @@ def update_line_data(
                     if term.obj in lne_term_obs
                 ]
 
-                # Maximum fault currents at line terminals
-                line.max_fl_3ph = max(
-                    [term.max_fl_3ph for term in line_terms]
+                # Maximum fault currents at line terminals. max_fl_*
+                # may be None on floating terminals where the maximum
+                # study produced no result for that line (e.g. 3-phase
+                # or 2-phase studies on single-phase SWER spurs).
+                line.max_fl_3ph = _line_safe_max(
+                    term.max_fl_3ph for term in line_terms
                 )
-                line.max_fl_2ph = max(
-                    [term.max_fl_2ph for term in line_terms]
+                line.max_fl_2ph = _line_safe_max(
+                    term.max_fl_2ph for term in line_terms
                 )
-                line.max_fl_pg = max(
-                    [term.max_fl_pg for term in line_terms]
+                line.max_fl_pg = _line_safe_max(
+                    term.max_fl_pg for term in line_terms
                 )
 
-                # Find downstream terminals for minimum faults
-                lne_max_term_obj = [
-                    term.obj for term in line_terms
-                    if term.max_fl_pg == line.max_fl_pg
-                ][0]
-                max_lne_cub = [
-                    cub for cub in lne_cubs
-                    if cub.cterm == lne_max_term_obj
-                ][0]
+                # Find the terminal carrying the highest max_fl_pg,
+                # treating None as lowest, so a terminal is always
+                # selected even when no value equals the defaulted
+                # line maximum.
+                lne_max_term_obj = max(
+                    line_terms,
+                    key=lambda term: (
+                        term.max_fl_pg is not None,
+                        term.max_fl_pg if term.max_fl_pg is not None else 0
+                    )
+                ).obj
 
                 down_elements = max_lne_cub.GetAll(1, 0)
                 if any(item in grids for item in down_elements):
