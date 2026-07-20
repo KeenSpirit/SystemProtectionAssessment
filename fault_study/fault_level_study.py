@@ -775,6 +775,10 @@ def update_line_data(
                         term.max_fl_pg if term.max_fl_pg is not None else 0
                     )
                 ).obj
+                max_lne_cub = [
+                    cub for cub in lne_cubs
+                    if cub.cterm == lne_max_term_obj
+                ][0]
 
                 down_elements = max_lne_cub.GetAll(1, 0)
                 if any(item in grids for item in down_elements):
