@@ -683,10 +683,16 @@ def update_device_data(region: str, devices: List[ast.Device]) -> None:
              and term.min_sn_fl_pg > 0]
         )
 
-        # Sort terminals by minimum fault level
+        # Sort terminals by minimum fault level. min_fl_pg may be
+        # None on floating terminals when the minimum fault study
+        # produced no results (e.g. external grid minimums are zero);
+        # sort those last rather than crashing on None comparison.
         device.sect_terms = sorted(
             device.sect_terms,
-            key=lambda term: term.min_fl_pg,
+            key=lambda term: (
+                term.min_fl_pg is not None,
+                term.min_fl_pg if term.min_fl_pg is not None else 0
+            ),
             reverse=True
         )
 
