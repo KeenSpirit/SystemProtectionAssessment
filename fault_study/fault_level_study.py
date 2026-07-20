@@ -591,10 +591,10 @@ def _line_safe_min(sequence) -> Union[int, float]:
     return min(values) if values else 0
 
 
-def _line_safe_min(sequence) -> Union[int, float]:
-    """Return minimum of non-None values, or 0 if none exist."""
+def _line_safe_max(sequence) -> Union[int, float]:
+    """Return maximum of non-None values, or 0 if none exist."""
     values = [v for v in sequence if v is not None]
-    return min(values) if values else 0
+    return max(values) if values else 0
 
 
 def update_device_data(region: str, devices: List[ast.Device]) -> None:
