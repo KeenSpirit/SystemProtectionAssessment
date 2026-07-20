@@ -585,6 +585,12 @@ def copy_min_fls(devices: List[ast.Device]) -> None:
             terminal.min_sn_fl_2ph = terminal.min_fl_2ph
 
 
+def _line_safe_min(sequence) -> Union[int, float]:
+    """Return minimum of non-None values, or 0 if none exist."""
+    values = [v for v in sequence if v is not None]
+    return min(values) if values else 0
+
+
 def update_device_data(region: str, devices: List[ast.Device]) -> None:
     """
     Populate device-level fault current summaries from section data.
@@ -772,52 +778,53 @@ def update_line_data(
 
                 # Calculate minimum fault currents
                 if line_ds_terms:
-                    try:
-                        line.min_fl_3ph = min(
-                            [term.min_fl_3ph for term in device.sect_terms
-                             if term.obj in line_ds_terms]
-                        )
-                        line.min_fl_2ph = min(
-                            [term.min_fl_2ph for term in device.sect_terms
-                             if term.obj in line_ds_terms]
-                        )
-                        line.min_sn_fl_2ph = min(
-                            [term.min_sn_fl_2ph for term in device.sect_terms
-                             if term.obj in line_ds_terms]
-                        )
-                    except (AttributeError, ValueError):
-                        logger.info(line.obj)
-                        logger.info(f"max_lne_cub: {max_lne_cub}")
-                        logger.info(f"line_ds_terms: {line_ds_terms}")
-
-                    line.min_fl_pg = min(
-                        [fault_impedance.get_terminal_pg_fault(region, term)
-                         for term in device.sect_terms
-                         if term.obj in line_ds_terms]
+                    line.min_fl_3ph = _line_safe_min(
+                        term.min_fl_3ph for term in device.sect_terms
+                        if term.obj in line_ds_terms
                     )
-                    line.min_sn_fl_pg = min(
+                    line.min_fl_2ph = _line_safe_min(
+                        term.min_fl_2ph for term in device.sect_terms
+                        if term.obj in line_ds_terms
+                    )
+                    line.min_sn_fl_2ph = _line_safe_min(
+                        term.min_sn_fl_2ph for term in device.sect_terms
+                        if term.obj in line_ds_terms
+                    )
+                    line.min_fl_pg = _line_safe_min(
+                        fault_impedance.get_terminal_pg_fault(region, term)
+                        for term in device.sect_terms
+                        if term.obj in line_ds_terms
+                        and term.min_fl_pg and term.min_fl_pg > 0
+                    )
+                    line.min_sn_fl_pg = _line_safe_min(
                         [fault_impedance.get_terminal_pg_fault(region, term, True)
                          for term in device.sect_terms
                          if term.obj in line_ds_terms]
                     )
                 else:
-                    # Use line terminal values if no downstream terminals
-                    line.min_fl_3ph = min(
-                        [term.min_fl_3ph for term in line_terms]
+                    # Use line terminal values if no downstream terminals.
+                    # Minimum fault values may be None where the minimum
+                    # study produced no results (e.g. external grid
+                    # minimums are zero); those terminals are skipped
+                    # rather than crashing the min() comparison.
+                    line.min_fl_3ph = _line_safe_min(
+                        term.min_fl_3ph for term in line_terms
                     )
-                    line.min_fl_2ph = min(
-                        [term.min_fl_2ph for term in line_terms]
+                    line.min_fl_2ph = _line_safe_min(
+                        term.min_fl_2ph for term in line_terms
                     )
-                    line.min_sn_fl_2ph = min(
-                        [term.min_sn_fl_2ph for term in line_terms]
+                    line.min_sn_fl_2ph = _line_safe_min(
+                        term.min_sn_fl_2ph for term in line_terms
                     )
-                    line.min_fl_pg = min(
-                        [fault_impedance.get_terminal_pg_fault(region, term)
-                         for term in line_terms]
+                    line.min_fl_pg = _line_safe_min(
+                        fault_impedance.get_terminal_pg_fault(region, term)
+                        for term in line_terms
+                        if term.min_fl_pg and term.min_fl_pg > 0
                     )
-                    line.min_sn_fl_pg = min(
-                        [fault_impedance.get_terminal_pg_fault(region, term, True)
-                         for term in line_terms]
+                    line.min_sn_fl_pg = _line_safe_min(
+                        fault_impedance.get_terminal_pg_fault(region, term, True)
+                        for term in line_terms
+                        if term.min_sn_fl_pg and term.min_sn_fl_pg > 0
                     )
             else:
                 # Line not in section - set all to zero
