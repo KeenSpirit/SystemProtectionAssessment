@@ -44,16 +44,14 @@ reload(ft)
 reload(ast)
 reload(fault_impedance)
 
-
 def fault_study(
     app: pft.Application,
     external_grid: Dict,
     region: str,
-    feeder: ast.Feeder,
-    study_selections: List[str]
+    feeders: List[ast.Feeder]
 ) -> None:
     """
-    Perform comprehensive fault level analysis for a feeder.
+    Perform comprehensive fault level analysis for a list of feeders.
 
     Orchestrates the complete fault study workflow including topology
     analysis, short-circuit calculations, and result extraction.
@@ -62,7 +60,7 @@ def fault_study(
         app: PowerFactory application instance.
         external_grid: Dictionary of external grid objects and parameters.
         region: Network region ('SEQ' or 'Regional Models').
-        feeder: Feeder dataclass to analyze.
+        feeders: List of feeder dataclasses to analyze.
         study_selections: List of selected study types.
 
     Side Effects:
@@ -74,13 +72,17 @@ def fault_study(
         Minimum studies: 3-Phase, 2-Phase, Ground, Ground Z10, Ground Z50
         System normal minimum: 2-Phase, Ground, Ground Z10, Ground Z50
     """
-    logger.info(f"Fault level study: {feeder.obj.loc_name}")
 
-    # Build device topology
-    get_downstream_objects(app, region, feeder.devices)
-    us_ds_device(feeder.devices, feeder.bu_devices)
-    get_ds_capacity(feeder.devices)
-    get_device_sections(app, feeder.devices)
+    logger.info(f"Fault level study begins")
+
+
+
+    for feeder in feeders:
+        # Build device topology
+        get_downstream_objects(app, region, feeder.devices)
+        us_ds_device(feeder.devices, feeder.bu_devices)
+        get_ds_capacity(feeder.devices)
+        get_device_sections(app, feeder.devices)
 
     # Define study configurations
     study_configs = [
@@ -93,20 +95,25 @@ def fault_study(
         ('Min', 'Ground Z50'),
     ]
 
-    # Determine protection consideration mode
-    if "Fault Level Study (all relays configured in model)" in study_selections:
-        consider_prot = 'All'
-    else:
-        consider_prot = 'None'
+    # Set all LV terminals OOS to speed up all-terminal short-circuit calculation
+    if region == "Regional Models":
+        terminals = app.GetCalcRelevantObjects("*.ElmTerm")
+        term_dic = {}
+        for term in terminals:
+            if term.GetAttribute("uknom") < 1:
+                term_dic[term] = term.GetAttribute("outserv")
+                term.SetAttribute("outserv", 1)
 
     # Execute main fault studies
     for bound, fault_type in study_configs:
-        analysis.short_circuit(app, bound, fault_type, consider_prot)
-        terminal_fls(feeder.devices, bound=bound, f_type=fault_type)
+        analysis.short_circuit(app, bound, fault_type, consider_prot='None')
+        for feeder in feeders:
+            terminal_fls(feeder.devices, bound=bound, f_type=fault_type)
 
     # Handle system normal minimum studies
     if grid_equivalence_check(external_grid):
-        copy_min_fls(feeder.devices)
+        for feeder in feeders:
+            copy_min_fls(feeder.devices)
     else:
         # Grid impedances are mutated for the SN-min studies; the
         # finally guarantees restoration even if a study raises, so
@@ -115,21 +122,28 @@ def fault_study(
         reset_min_source_imp(external_grid, sys_norm_min=True)
         try:
             for bound, fault_type in sn_study_configs:
-                analysis.short_circuit(app, bound, fault_type, consider_prot)
-                terminal_fls(feeder.devices, bound='SN_Min', f_type=fault_type)
+                analysis.short_circuit(app, bound, fault_type, consider_prot='None')
+                for feeder in feeders:
+                    terminal_fls(feeder.devices, bound='SN_Min', f_type=fault_type)
         finally:
             reset_min_source_imp(external_grid, sys_norm_min=False)
 
-    # Determine construction types for fault impedance selection
-    fault_impedance.update_node_construction(feeder.devices)
+    # Restore all Lv terminations to original state
+    if region == "Regional Models":
+        for term, status in term_dic.values():
+            term.SetAttribute("outserv", status)
 
-    # Handle floating terminals
-    floating_terms = ft.get_floating_terminals(feeder.obj, feeder.devices)
-    append_floating_terms(app, external_grid, feeder.devices, floating_terms, consider_prot)
+    for feeder in feeders:
+        # Determine construction types for fault impedance selection
+        fault_impedance.update_node_construction(feeder.devices)
 
-    # Update device and line data with results
-    update_device_data(region, feeder.devices)
-    update_line_data(app, region, feeder.devices)
+        # Handle floating terminals
+        floating_terms = ft.get_floating_terminals(feeder.obj, feeder.devices)
+        append_floating_terms(app, external_grid, feeder.devices, floating_terms, consider_prot='None')
+
+        # Update device and line data with results
+        update_device_data(region, feeder.devices)
+        update_line_data(app, region, feeder.devices)
 
 
 def get_downstream_objects(

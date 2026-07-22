@@ -121,19 +121,22 @@ def begin(
     feeders = cvrt_fdr_to_dataclass(app, feeders_devices, bu_devices)
     logger.info(f"{len(feeders)} feeders to assess")
 
+    # Add "Conductor Damage Assessment" to study_selections for a conductor damage assessment
     study_selections = ["Fault Level Study (all relays configured in model)"]
-    # Process each feeder
+    # Process feeders
     for i, feeder in enumerate(feeders, start=1):
         name = getattr(feeder.obj, "loc_name", str(feeder.obj))
 
         logger.info(f"[{i}/{len(feeders)}] {name}: open points")
         gop.get_open_points(app, feeder)
 
-        logger.info(f"[{i}/{len(feeders)}] {name}: fault study")
-        fs.fault_study(
-            app, external_grid, region, feeder, study_selections
-        )
+    logger.info("All feeders fault study")
+    fs.fault_study(
+        app, external_grid, region, feeders
+    )
 
+    for i, feeder in enumerate(feeders, start=1):
+        name = getattr(feeder.obj, "loc_name", str(feeder.obj))
         if "Conductor Damage Assessment" in study_selections:
             selected_devices = [
                 device for device in feeder.devices]

@@ -973,7 +973,10 @@ def nps_oos(device: ast.Device) -> bool:
     section_devices = [device.obj]
     section_devices.extend([bu_device.obj for bu_device in device.us_devices])
     all_elements = [get_prot_elements(device_pf) for device_pf in section_devices
-                    if device_pf.GetClassName() == 'ElmRelay'][0]
+                    if device_pf.GetClassName() == 'ElmRelay']
+    if not all_elements:
+        return True
+    all_elements = all_elements[0]
     nps_elements = (
             all_elements['nps_idmt_elements'] + all_elements['nps_inst_elements']
     )
