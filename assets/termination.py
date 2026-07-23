@@ -185,7 +185,7 @@ def build_term_fls(term: Termination):
     elif term.phases == 1:
         term.min_fl_2ph = 0
     else:
-        term.min_fl_2ph = 0
+        term.min_fl_2ph = None
     if _z_available(term.min_r0, term.min_x0, term.min_r1, term.min_x1, term.min_r2, term.min_x2):
         term.min_fl_pg = get_pg_fault(
             c_min_v, term.min_r0, term.min_x0, term.min_r1, term.min_x1, term.min_r2, term.min_x2, 0)
