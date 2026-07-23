@@ -40,6 +40,22 @@ logger = logging.getLogger(__name__)
 # conductor-damage runtime dominates a batch run.
 FL_STEP_AMPS = 10
 
+
+def _max_phase_fl(line: Any) -> Optional[float]:
+    """
+    Highest available maximum phase fault level for a line.
+
+    Either the 2-phase or 3-phase maximum may be None where that
+    scenario produced no result. The available value is used rather
+    than aborting the line; None is returned only when both are
+    missing.
+    """
+    candidates = [
+        fl for fl in (line.max_fl_2ph, line.max_fl_3ph) if fl is not None
+    ]
+    return max(candidates) if candidates else None
+
+
 # =============================================================================
 # MAIN ENTRY POINT
 # =============================================================================
@@ -213,8 +229,9 @@ def fault_clear_times(
         For earth faults, applies SWER transformation if applicable.
     """
 
-    if line.min_fl_2ph is None or line.max_fl_2ph is None:
-        logging.info(
+    max_phase_fl = _max_phase_fl(line)
+    if line.min_fl_2ph is None or max_phase_fl is None:
+        logger.info(
             f"{device.obj.loc_name} {fault_type} conductor damage "
             f"skipped: missing line fault level data."
         )
@@ -222,7 +239,7 @@ def fault_clear_times(
 
     if fault_type in ['2-Phase', '3-Phase']:
         min_fl = line.min_fl_2ph
-        max_fl = max(line.max_fl_2ph, line.max_fl_3ph)
+        max_fl = max_phase_fl
     else:
         # Check if this is a SWER line,
         # and does the device see the same current?
@@ -312,7 +329,7 @@ def swer_fault_range(
     """
 
     min_fl = line.min_fl_2ph
-    max_fl = max(line.max_fl_2ph, line.max_fl_3ph)
+    max_fl = _max_phase_fl(line)
 
     line_type = line.obj.typ_id
 

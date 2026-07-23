@@ -9,7 +9,7 @@ from pf_config import pft
 import pf_protection_helper as helper
 from typing import Any, Dict, List, Tuple, Optional
 import assets as ast
-import math
+import load_source_z_data
 from devices import fuses
 from relays import elements
 from fdr_open_points import get_open_points as gop
@@ -115,7 +115,7 @@ def begin(
            and grid.GetAttribute('bus1') is not None
     ]
 
-    external_grid = get_grid_data(app, grids)
+    external_grid = get_grid_data(grids, region)
 
     # Convert to assets dataclasses
     feeders = cvrt_fdr_to_dataclass(app, feeders_devices, bu_devices)
@@ -207,7 +207,7 @@ def mesh_feeder_check(app) -> Tuple[List[str], bool]:
     return sorted(radial_list), mesh_feeder_check
 
 
-def get_grid_data(app, grids: List) -> Dict:
+def get_grid_data(grids: List, region: str) -> Dict:
     """
     Collect fault level parameters from external grid elements.
 
@@ -229,91 +229,50 @@ def get_grid_data(app, grids: List) -> Dict:
         'ikssmin', 'rntxnmin', 'z2tz1min', 'x0tx1min', 'r0tx0min'
     ]
 
+    grid_data_import = load_source_z_data.grid_data_import(region)
+    matched = 0
+
     for grid in grids:
-        grid_data[grid] = [
-            grid.GetAttribute(attr) for attr in attributes
-        ]
-        app.PrintPlain(
-            f'Finding System normal source impedance for {grid}...'
-        )
-        grid_loc_name = grid.GetAttribute('loc_name')
-        master_grid = get_master_grid(app, grid_loc_name)
+        # The workbooks are keyed by grid name, not by object.
+        name = grid.loc_name.strip()
+        scenario_dic = grid_data_import.get(name)
 
-        if master_grid:
-            grid_prw = master_grid.GetAttribute('snssmin')
-            # Convert snssmin (MVA) to kA at the grid's connected
-            # nominal voltage: I = S / (sqrt(3) * U_LL).
-            try:
-                uknom = grid.bus1.cterm.uknom
-            except AttributeError:
-                uknom = None
-            if not uknom or uknom <= 0:
-                logger.warning(
-                    f"Could not determine nominal voltage for grid "
-                    f"{grid_loc_name}; assuming 11 kV for system normal "
-                    f"minimum conversion."
-                )
-                uknom = 11
-            ikssmin = grid_prw / (uknom * math.sqrt(3))
-            master_grid_attr = [
-                'rntxnmin', 'z2tz1min', 'x0tx1min', 'r0tx0min'
-            ]
-            master_grid_imp = [
-                master_grid.GetAttribute(attr) for attr in master_grid_attr
-            ]
-            grid_data[grid].append(ikssmin)
-            grid_data[grid].extend(master_grid_imp)
-
-        if len(grid_data[grid]) == 10:
+        if scenario_dic is None:
             logger.warning(
-                f'Could not find system normal source impedance '
-                f'for {grid}...'
+                "No source z-data for external grid '%s'. Model "
+                "values kept.", name
             )
-            grid_data[grid].extend([0, 0, 0, 0, 0])
+            # Read the model's own values: 5 max, 5 min, then the min
+            # values again as the system normal minimum.
+            current = [grid.GetAttribute(attr) for attr in attributes]
+            grid_data[grid] = current + current[-5:]
+            continue
+
+        # Element 0 of each list is the scenario name, not a value.
+        grid_data[grid] = (
+                scenario_dic['max'][-5:]
+                + scenario_dic['min'][-5:]
+                + scenario_dic['sn_min'][-5:]
+        )
+
+        for i, attr in enumerate(attributes):
+            grid.SetAttribute(attr, grid_data[grid][i])
+        matched += 1
+
+    if grids and not matched:
+        logger.error(
+            "None of the %s external grids matched the source z-data "
+            "for region '%s'. Every grid is running on model defaults "
+            "- check grid naming in the workbook.", len(grids), region
+        )
+    else:
+        logger.info(
+            "Source z-data applied to %s of %s external grids.",
+            matched, len(grids)
+        )
 
     return grid_data
 
-
-def get_master_grid(app, grid_loc_name: str):
-    """
-    Retrieve master project grid data for system normal minimum.
-
-    Searches the derived base project for matching external grid
-    elements to obtain system normal minimum fault level data.
-
-    Args:
-        grid_loc_name: Location name of the grid to find.
-
-    Returns:
-        The master project grid object if found, False otherwise.
-    """
-    project = app.GetActiveProject()
-    derived_proj = project.GetAttribute('der_baseproject')
-
-    if derived_proj is None:
-        return False
-
-    net_dat = derived_proj.GetContents("Network Model\\Network Data")
-    for network in net_dat:
-        elm_nets = network.GetContents("*.ElmNet")
-        for elm_net in elm_nets:
-            elm_substats = elm_net.GetContents("*.ElmSubstat")
-            for elm_substat in elm_substats:
-                grids = elm_substat.GetContents(
-                    f'{grid_loc_name}.ElmXnet', 1
-                )
-                if grids:
-                    master_proj_grids = grids[0]
-                    app.PrintPlain(
-                        f'Gathered master grid data for {grid_loc_name}.'
-                    )
-                    return master_proj_grids
-
-    logger.warning(
-        f"Could not find master grid data for {grid_loc_name}; "
-        f"system normal minimum fault levels will fall back to defaults"
-    )
-    return False
 
 
 def get_feeders_devices(app, radial_list: List[str]

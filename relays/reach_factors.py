@@ -35,6 +35,29 @@ if TYPE_CHECKING:
 # against relay elements.
 FUSE_PICKUP_RATING_FACTOR = 2
 
+def _safe_ratio(numerator, denominator, divisor: float = 1.0):
+    """
+    Divide with tolerance for missing fault level data.
+
+    Returns the 'NA' sentinel — already used for unconfigured
+    protection functions — when the element has no fault study
+    result (None) or the pickup is missing or zero. This keeps a
+    single terminal with no result from aborting the whole feeder
+    report.
+
+    Args:
+        numerator: Fault current in Amperes, or None if the study
+            produced no result at that element.
+        denominator: Pickup setting in Amperes.
+        divisor: Optional sequence factor (3 or sqrt(3)).
+
+    Returns:
+        Reach factor rounded to 2 decimals, or 'NA'.
+    """
+    if numerator is None or not denominator:
+        return 'NA'
+    return round(numerator / divisor / denominator, 2)
+
 
 def device_reach_factors(
     region: str,
@@ -227,6 +250,10 @@ def swer_transform(
         >>> # If SWER at 12.7kV and device at 22kV:
         >>> # device_current = (12.7 × 500) / (22 × 1.732) ≈ 167A
     """
+
+    if term_fl_pg is None:
+        return None
+
     # Check if transformation is needed
     voltage_mismatch = term.l_l_volts != device.l_l_volts
     term_single_phase = term.phases == 1
@@ -306,15 +333,22 @@ def _calculate_ef_reach_factors(
         else:
             element_fl_pg = element.min_fl_pg
 
+        # No minimum earth fault result at this element; reach cannot
+        # be assessed. Lines carry min_fl_pg raw, unlike terminals
+        # which pass through get_terminal_pg_fault.
+        if element_fl_pg is None:
+            ef_rf.append('NA')
+            continue
+
         # Apply SWER transformation if needed
         device_fl = swer_transform(device, element, element_fl_pg)
 
         # Calculate reach factor
         if device_fl != element_fl_pg:
             # SWER case - device sees 2-phase equivalent
-            rf = round(device_fl / ph_pickup, 2)
+            rf = _safe_ratio(device_fl, ph_pickup)
         else:
-            rf = round(device_fl / effective_ef_pickup, 2)
+            rf = _safe_ratio(device_fl, effective_ef_pickup)
 
         ef_rf.append(rf)
 
@@ -335,7 +369,7 @@ def _calculate_ph_reach_factors(elements: List, ph_pickup: float) -> List:
     if ph_pickup <= 0:
         return ['NA'] * len(elements)
 
-    return [round(element.min_fl_2ph / ph_pickup, 2) for element in elements]
+    return [_safe_ratio(element.min_fl_2ph, ph_pickup) for element in elements]
 
 
 def _calculate_nps_reach_factors(
@@ -370,20 +404,26 @@ def _calculate_nps_reach_factors(
         else:
             element_fl_pg = element.min_fl_pg
 
+        # No minimum earth fault result at this element; reach cannot
+        # be assessed.
+        if element_fl_pg is None:
+            nps_ef_rf.append('NA')
+            continue
+
         device_fl = swer_transform(device, element, element_fl_pg)
 
         if device_fl == element_fl_pg:
             # No SWER - device sees earth fault (I2 = If/3)
-            rf = round(device_fl / 3 / nps_pickup, 2)
+            rf = _safe_ratio(device_fl, nps_pickup, 3)
         else:
             # SWER - device sees 2-phase equivalent (I2 = If/√3)
-            rf = round(device_fl / math.sqrt(3) / nps_pickup, 2)
+            rf = _safe_ratio(device_fl, nps_pickup, math.sqrt(3))
 
         nps_ef_rf.append(rf)
 
     # NPS phase fault reach factors
     nps_ph_rf = [
-        round(element.min_fl_2ph / math.sqrt(3) / nps_pickup, 2)
+        _safe_ratio(element.min_fl_2ph, nps_pickup, math.sqrt(3))
         for element in elements
     ]
 
@@ -462,7 +502,7 @@ def _calculate_backup_reach_factors(
     # Backup phase reach factors
     if bu_ph_pickup and bu_ph_pickup > 0:
         bu_ph_rf = [
-            round(element.min_fl_2ph / bu_ph_pickup, 2)
+            _safe_ratio(element.min_fl_2ph, bu_ph_pickup)
             for element in elements
         ]
     else:
@@ -519,12 +559,18 @@ def _calculate_bu_ef_rf(
         else:
             element_fl_pg = element.min_fl_pg
 
+            # No minimum earth fault result at this element; reach cannot
+            # be assessed.
+        if element_fl_pg is None:
+            bu_ef_rf.append('NA')
+            continue
+
         bu_device_fl = swer_transform(bu_device, element, element_fl_pg)
 
         if bu_device_fl != element_fl_pg:
-            rf = round(bu_device_fl / bu_ph_pickup, 2)
+            rf = _safe_ratio(bu_device_fl, bu_ph_pickup)
         else:
-            rf = round(bu_device_fl / effective_bu_ef_pickup, 2)
+            rf = _safe_ratio(bu_device_fl, effective_bu_ef_pickup)
 
         bu_ef_rf.append(rf)
 
@@ -565,17 +611,23 @@ def _calculate_bu_nps_rf(
         else:
             element_fl_pg = element.min_fl_pg
 
+            # No minimum earth fault result at this element; reach cannot
+            # be assessed.
+        if element_fl_pg is None:
+            bu_nps_ef_rf.append('NA')
+            continue
+
         bu_device_fl = swer_transform(bu_device, element, element_fl_pg)
 
         if bu_device_fl == element_fl_pg:
-            rf = round(bu_device_fl / 3 / bu_nps_pickup, 2)
+            rf = _safe_ratio(bu_device_fl, bu_nps_pickup, 3)
         else:
-            rf = round(bu_device_fl / math.sqrt(3) / bu_nps_pickup, 2)
+            rf = _safe_ratio(bu_device_fl, bu_nps_pickup, math.sqrt(3))
 
         bu_nps_ef_rf.append(rf)
 
     bu_nps_ph_rf = [
-        round(element.min_fl_2ph / math.sqrt(3) / bu_nps_pickup, 2)
+        _safe_ratio(element.min_fl_2ph, bu_nps_pickup, math.sqrt(3))
         for element in elements
     ]
 
