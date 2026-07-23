@@ -10,6 +10,9 @@ from dataclasses import dataclass
 from typing import Optional, TYPE_CHECKING
 
 from assets.enums import ph_attr_lookup
+import logging
+
+logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from pf_config import pft
@@ -134,50 +137,85 @@ def initialise_term_dataclass(elmterm: "pft.ElmTerm") -> Optional[Termination]:
     )
 
 
-def build_term_fls(elmterm: "pft.ElmTerm"):
+def _z_available(*values) -> bool:
+    """
+    True if every impedance component is present and non-degenerate.
 
-    c_min_v = elmterm.l_l_volts
-    c_max_v = elmterm.l_l_volts * 1.1
+    Guards against both missing study results (None) and an all-zero
+    impedance set, which would divide by zero.
+    """
+    if any(v is None for v in values):
+        return False
+    return any(v != 0 for v in values)
+
+
+def build_term_fls(term: Termination):
+
+    c_min_v = term.l_l_volts
+    c_max_v = term.l_l_volts * 1.1
 
     # Maximums
-    if elmterm.phases == 3:
-        elmterm.max_fl_3ph = get_3p_fault(c_max_v, elmterm.max_r1, elmterm.max_x1)
+    if term.phases == 3 and _z_available(term.max_r1, term.max_x1):
+        term.max_fl_3ph = get_3p_fault(c_max_v, term.max_r1, term.max_x1)
+    elif term.phases != 3:
+        term.max_fl_3ph = 0
     else:
-        elmterm.max_fl_3ph = 0
-    if elmterm.phases > 1:
-        elmterm.max_fl_2ph = get_2p_fault(c_max_v, elmterm.max_r1, elmterm.max_x1, elmterm.max_r2, elmterm.max_x1)
+        term.max_fl_3ph = None
+    if term.phases > 1 and _z_available(term.max_r1, term.max_x1, term.max_r2, term.max_x2):
+        term.max_fl_2ph = get_2p_fault(c_max_v, term.max_r1, term.max_x1, term.max_r2, term.max_x2)
+    elif term.phases == 1:
+        term.max_fl_2ph = 0
     else:
-        elmterm.max_fl_2ph = 0
-    elmterm.max_fl_pg = get_pg_fault(
-        c_max_v, elmterm.max_r0, elmterm.max_x0, elmterm.max_r1, elmterm.max_x1, elmterm.max_r2, elmterm.max_x2, 0)
+        term.max_fl_2ph = None
+    if _z_available(term.max_r0, term.max_x0, term.max_r1, term.max_x1, term.max_r2, term.max_x2):
+        term.max_fl_pg = get_pg_fault(
+            c_max_v, term.max_r0, term.max_x0, term.max_r1, term.max_x1, term.max_r2, term.max_x2, 0)
+    else:
+        term.max_fl_pg = None
 
     # Minimums
-    if elmterm.phases == 3:
-        elmterm.min_fl_3ph = get_3p_fault(c_min_v, elmterm.min_r1, elmterm.min_x1)
+    if term.phases == 3 and _z_available(term.min_r1, term.min_x1):
+        term.min_fl_3ph = get_3p_fault(c_min_v, term.min_r1, term.min_x1)
+    elif term.phases != 3:
+        term.min_fl_3ph = 0
     else:
-        elmterm.min_fl_3ph = 0
-    if elmterm.phases > 1:
-        elmterm.min_fl_2ph = get_2p_fault(c_min_v, elmterm.min_r1, elmterm.min_x1, elmterm.min_r2, elmterm.min_x2)
+        term.min_fl_3ph = None
+    if term.phases > 1 and _z_available(term.min_r1, term.min_x1, term.min_r2, term.min_x2):
+        term.min_fl_2ph = get_2p_fault(c_min_v, term.min_r1, term.min_x1, term.min_r2, term.min_x2)
+    elif term.phases == 1:
+        term.min_fl_2ph = 0
     else:
-        elmterm.min_fl_2ph = 0
-    elmterm.min_fl_pg = get_pg_fault(
-        c_min_v, elmterm.min_r0, elmterm.min_x0, elmterm.min_r1, elmterm.min_x1, elmterm.min_r2, elmterm.min_x2, 0)
-    elmterm.min_fl_pg10 = get_pg_fault(
-        c_min_v, elmterm.min_r0, elmterm.min_x0, elmterm.min_r1, elmterm.min_x1, elmterm.min_r2, elmterm.min_x2, 10)
-    elmterm.min_fl_pg50 = get_pg_fault(
-        c_min_v, elmterm.min_r0, elmterm.min_x0, elmterm.min_r1, elmterm.min_x1, elmterm.min_r2, elmterm.min_x2, 50)
+        term.min_fl_2ph = 0
+    if _z_available(term.min_r0, term.min_x0, term.min_r1, term.min_x1, term.min_r2, term.min_x2):
+        term.min_fl_pg = get_pg_fault(
+            c_min_v, term.min_r0, term.min_x0, term.min_r1, term.min_x1, term.min_r2, term.min_x2, 0)
+        term.min_fl_pg10 = get_pg_fault(
+            c_min_v, term.min_r0, term.min_x0, term.min_r1, term.min_x1, term.min_r2, term.min_x2, 10)
+        term.min_fl_pg50 = get_pg_fault(
+            c_min_v, term.min_r0, term.min_x0, term.min_r1, term.min_x1, term.min_r2, term.min_x2, 50)
+    else:
+        term.min_fl_pg = None
+        term.min_fl_pg10 = None
+        term.min_fl_pg50 = None
 
     # System Normal minimums
-    if elmterm.phases > 1:
-        elmterm.min_sn_fl_2ph = get_2p_fault(c_min_v, elmterm.min_sn_r1, elmterm.min_sn_x1, elmterm.min_sn_r2, elmterm.min_sn_x2)
+    if term.phases > 1 and _z_available(term.min_sn_r1, term.min_sn_x1, term.min_sn_r2, term.min_sn_x2):
+        term.min_sn_fl_2ph = get_2p_fault(c_min_v, term.min_sn_r1, term.min_sn_x1, term.min_sn_r2, term.min_sn_x2)
+    elif term.phases == 1:
+        term.min_sn_fl_2ph = 0
     else:
-        elmterm.min_sn_fl_2ph = 0
-    elmterm.min_sn_fl_pg = get_pg_fault(
-        c_min_v, elmterm.min_r0, elmterm.min_x0, elmterm.min_r1, elmterm.min_x1, elmterm.min_r2, elmterm.min_x2, 0)
-    elmterm.min_sn_fl_pg10 = get_pg_fault(
-        c_min_v, elmterm.min_sn_r0, elmterm.min_sn_x0, elmterm.min_sn_r1, elmterm.min_sn_x1, elmterm.min_sn_r2, elmterm.min_sn_x2, 10)
-    elmterm.min_sn_fl_pg50 = get_pg_fault(
-        c_min_v, elmterm.min_sn_r0, elmterm.min_sn_x0, elmterm.min_sn_r1, elmterm.min_sn_x1, elmterm.min_sn_r2, elmterm.min_sn_x2, 50)
+        term.min_sn_fl_2ph = None
+    if _z_available(term.min_sn_r0, term.min_sn_x0, term.min_sn_r1, term.min_sn_x1, term.min_sn_r2, term.min_sn_x2):
+        term.min_sn_fl_pg = get_pg_fault(
+            c_min_v, term.min_sn_r0, term.min_sn_x0, term.min_sn_r1, term.min_sn_x1, term.min_sn_r2, term.min_sn_x2, 0)
+        term.min_sn_fl_pg10 = get_pg_fault(
+            c_min_v, term.min_sn_r0, term.min_sn_x0, term.min_sn_r1, term.min_sn_x1, term.min_sn_r2, term.min_sn_x2, 10)
+        term.min_sn_fl_pg50 = get_pg_fault(
+            c_min_v, term.min_sn_r0, term.min_sn_x0, term.min_sn_r1, term.min_sn_x1, term.min_sn_r2, term.min_sn_x2, 50)
+    else:
+        term.min_sn_fl_pg = None
+        term.min_sn_fl_pg10 = None
+        term.min_sn_fl_pg50 = None
 
 
 def get_3p_fault(v, r1, x1) -> float:
@@ -188,8 +226,9 @@ def get_3p_fault(v, r1, x1) -> float:
     :param x1:
     :return:
     """
-    z1 = math.sqrt(r1^2 + x1^2)
-    return  v / z1
+    z1 = math.sqrt(r1**2 + x1**2)
+    current = v / (math.sqrt(3) * z1)
+    return  round(current * 1000)
 
 
 def get_2p_fault(v, r1, x1, r2, x2) -> float:
@@ -203,7 +242,8 @@ def get_2p_fault(v, r1, x1, r2, x2) -> float:
     :return:
     """
     z = math.sqrt((r1+r2)**2 + (x1+x2)**2)
-    return v / z
+    current = v / z
+    return round(current * 1000)
 
 
 def get_pg_fault(v, r0, x0, r1, x1, r2, x2, rf) -> float:
@@ -221,4 +261,5 @@ def get_pg_fault(v, r0, x0, r1, x1, r2, x2, rf) -> float:
     """
     l_g_v = v / math.sqrt(3)
     z = math.sqrt((r0 + r1 + r2 + 3 * rf) ** 2 + (x0 + x1 + x2) ** 2)
-    return 3 * l_g_v / z
+    current = 3 * l_g_v / z
+    return round(current * 1000)

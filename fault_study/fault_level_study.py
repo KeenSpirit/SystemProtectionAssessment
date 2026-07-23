@@ -17,7 +17,7 @@ Functions:
     us_ds_device: Establish upstream/downstream device relationships
     get_ds_capacity: Calculate downstream transformer capacity
     get_device_sections: Partition network into protection sections
-    terminal_fls: Extract terminal fault currents from study results
+    terminal_z: Extract terminal impedances from study results
     append_floating_terms: Handle floating terminal fault calculations
     grid_equivalence_check: Check if min equals system normal min
     reset_min_source_imp: Toggle external grid impedance values
@@ -68,9 +68,9 @@ def fault_study(
         dataclasses within the feeder structure.
 
     Study Configurations:
-        Maximum studies: 3-Phase, 2-Phase, Ground
-        Minimum studies: 3-Phase, 2-Phase, Ground, Ground Z10, Ground Z50
-        System normal minimum: 2-Phase, Ground, Ground Z10, Ground Z50
+        Maximum studies: Ground
+        Minimum studies: Ground
+        System normal minimum: Ground
     """
 
     logger.info(f"Fault level study begins")
@@ -101,7 +101,7 @@ def fault_study(
     # Handle system normal minimum studies
     if grid_equivalence_check(external_grid):
         for feeder in feeders:
-            copy_min_fls(feeder.devices)
+            copy_min_zs(feeder.devices)
     else:
         # Grid impedances are mutated for the SN-min studies; the
         # finally guarantees restoration even if a study raises, so
@@ -339,6 +339,8 @@ def get_device_sections(app: pft.Application, devices: List[ast.Device]) -> None
         device.sect_lines = dataclass_lines
 
 
+_Z_RESULT_VARS = ('m:R0', 'm:X0', 'm:R1', 'm:X1', 'm:R2', 'm:X2')
+
 # Maps a (bound, fault type) study combination to the Termination
 # attribute that receives the resulting fault current.
 # An unrecognised combination raises rather than silently writing
@@ -366,12 +368,25 @@ def terminal_z(
 
     for device in devices:
         for terminal in device.sect_terms:
-            setattr(terminal, attributes[1], terminal.obj.GetAttribute('m:R0'))
-            setattr(terminal, attributes[2], terminal.obj.GetAttribute('m:X0'))
-            setattr(terminal, attributes[3], terminal.obj.GetAttribute('m:R1'))
-            setattr(terminal, attributes[1], terminal.obj.GetAttribute('m:X1'))
-            setattr(terminal, attributes[2], terminal.obj.GetAttribute('m:R2'))
-            setattr(terminal, attributes[3], terminal.obj.GetAttribute('m:X2'))
+            missing = [
+                var for var in _Z_RESULT_VARS
+                if not terminal.obj.HasAttribute(var)
+            ]
+            if missing:
+                # Terminal was outside the calculation scope
+                for attr in attributes:
+                    setattr(terminal, attr, None)
+                logger.warning(
+                    "%s/%s: no impedance results at terminal %s "
+                    "(missing %s); fault levels for this scenario "
+                    "will not be calculated.",
+                    bound, f_type, terminal.obj.loc_name,
+                    ", ".join(missing)
+                )
+                continue
+
+            for attr, result_var in zip(attributes, _Z_RESULT_VARS):
+                setattr(terminal, attr, terminal.obj.GetAttribute(result_var))
 
 
 def append_floating_terms(
@@ -379,52 +394,96 @@ def append_floating_terms(
     floating_terms: Dict,
 ) -> None:
     """
+    Derive and append end-of-line (floating) terminations.
 
-    :param devices:
-    :param floating_terms:
-    :return:
+    A floating terminal's source impedance is the impedance at the
+    opposite end of its line plus the full line impedance. Any
+    terminal that cannot be derived is skipped with a warning rather
+    than aborting the feeder.
     """
+    # Scenario attribute order matches the line impedance order below.
+    z_scenarios = [
+        ['max_r0', 'max_x0', 'max_r1', 'max_x1', 'max_r2', 'max_x2'],
+        ['min_r0', 'min_x0', 'min_r1', 'min_x1', 'min_r2', 'min_x2'],
+        ['min_sn_r0', 'min_sn_x0', 'min_sn_r1', 'min_sn_x1',
+         'min_sn_r2', 'min_sn_x2'],
+    ]
+
     for dev, lines in floating_terms.items():
+        # Resolved once per device rather than once per line.
+        sect_terms = next(
+            (device.sect_terms for device in devices if device.term == dev),
+            None
+        )
+        if sect_terms is None:
+            logger.warning(
+                "Floating terminals at %s skipped: no device in this "
+                "feeder owns that terminal.", dev.loc_name
+            )
+            continue
+
         for line, elmterm in lines.items():
-            termination = ast.initialise_term_dataclass(elmterm)
-            line_r0 = line.GetAttribute("R0")
-            line_x0 = line.GetAttribute("X0")
-            line_r1 = line.GetAttribute("R1")
-            line_x1 = line.GetAttribute("X1")
-            line_r2 = line.GetAttribute("R1")
-            line_x2 = line.GetAttribute("X1")
+            if line.bus1 is None or line.bus2 is None:
+                logger.warning(
+                    "Floating terminal %s skipped: line %s has an "
+                    "unconnected cubicle.",
+                    elmterm.loc_name, line.loc_name
+                )
+                continue
 
             if line.bus1.cterm == elmterm:
                 opposite_elmterm = line.bus2.cterm
             else:
                 opposite_elmterm = line.bus1.cterm
 
-            # Find opposite_term dataclass
-            sect_terms = [
-                device.sect_terms for device in devices
-                if device.term == dev
-            ][0]
-            opposite_t = [
-                t for t in sect_terms
-                if t.obj == opposite_elmterm
-            ][0]
+            opposite_t = next(
+                (t for t in sect_terms if t.obj == opposite_elmterm),
+                None
+            )
+            if opposite_t is None:
+                logger.warning(
+                    "Floating terminal %s skipped: opposite terminal "
+                    "of line %s is not in the section of device at %s.",
+                    elmterm.loc_name, line.loc_name, dev.loc_name
+                )
+                continue
 
-            terminal_z_attributes = [
-                ['max_r0', 'max_x0', 'max_r1', 'max_x1', 'max_r2', 'max_x2'],
-                ['min_r0', 'min_x0', 'min_r1', 'min_x1', 'min_r2', 'min_x2'],
-                ['min_sn_r0', 'min_sn_x0', 'min_sn_r1', 'min_sn_x1', 'min_sn_r2', 'min_sn_x2']
+            # Z2 is taken as equal to Z1: PowerFactory line types
+            # carry no separate negative-sequence parameters, and for
+            # passive plant Z2 == Z1 by definition.
+            line_z = [
+                line.GetAttribute("R0"), line.GetAttribute("X0"),
+                line.GetAttribute("R1"), line.GetAttribute("X1"),
+                line.GetAttribute("R1"), line.GetAttribute("X1"),
             ]
 
-            # populate termination impedance values
-            for scenario in terminal_z_attributes:
-                setattr(termination, scenario[0], getattr(opposite_t, scenario[0]) + line_r0)
-                setattr(termination, scenario[1], getattr(opposite_t, scenario[1]) + line_x0)
-                setattr(termination, scenario[2], getattr(opposite_t, scenario[2]) + line_r1)
-                setattr(termination, scenario[3], getattr(opposite_t, scenario[3]) + line_x1)
-                setattr(termination, scenario[4], getattr(opposite_t, scenario[4]) + line_r2)
-                setattr(termination, scenario[5], getattr(opposite_t, scenario[5]) + line_x2)
+            termination = ast.initialise_term_dataclass(elmterm)
+            derived = 0
 
-            # Add to device section terminals
+            for scenario in z_scenarios:
+                source = [getattr(opposite_t, attr) for attr in scenario]
+                if any(v is None for v in source):
+                    logger.warning(
+                        "Floating terminal %s: %s impedances not "
+                        "derived (opposite terminal %s has no results "
+                        "for that scenario).",
+                        elmterm.loc_name,
+                        scenario[0].rsplit('_', 1)[0],
+                        opposite_t.obj.loc_name
+                    )
+                    continue
+                for attr, source_z, added_z in zip(scenario, source, line_z):
+                    setattr(termination, attr, source_z + added_z)
+                derived += 1
+
+            if derived == 0:
+                logger.warning(
+                    "Floating terminal %s skipped: no usable impedance "
+                    "scenarios on opposite terminal %s.",
+                    elmterm.loc_name, opposite_t.obj.loc_name
+                )
+                continue
+
             sect_terms.append(termination)
 
 
@@ -506,9 +565,9 @@ def reset_min_source_imp(new_grid_data: Dict,
                 )
 
 
-def copy_min_fls(devices: List[ast.Device]) -> None:
+def copy_min_zs(devices: List[ast.Device]) -> None:
     """
-    Copy minimum fault levels to system normal minimum fields.
+    Copy minimum source impedances to system normal minimum source impedances .
 
     Used when grid impedance values are identical for minimum and
     system normal minimum calculations.
@@ -517,14 +576,16 @@ def copy_min_fls(devices: List[ast.Device]) -> None:
         devices: List of Device dataclasses with populated terminals.
 
     Side Effects:
-        Sets min_sn_fl_* attributes on Termination dataclasses.
+        Sets min_sn_* attributes on Termination dataclasses.
     """
     for device in devices:
         for terminal in device.sect_terms:
-            terminal.min_sn_fl_pg = terminal.min_fl_pg
-            terminal.min_sn_fl_pg10 = terminal.min_fl_pg10
-            terminal.min_sn_fl_pg50 = terminal.min_fl_pg50
-            terminal.min_sn_fl_2ph = terminal.min_fl_2ph
+            terminal.min_sn_r0 = terminal.min_r0
+            terminal.min_sn_x0 = terminal.min_x0
+            terminal.min_sn_r1 = terminal.min_r1
+            terminal.min_sn_x1 = terminal.min_x1
+            terminal.min_sn_r2 = terminal.min_r2
+            terminal.min_sn_x2 = terminal.min_x2
 
 
 def _line_safe_min(sequence) -> Union[int, float]:

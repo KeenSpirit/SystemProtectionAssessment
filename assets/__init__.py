@@ -86,7 +86,7 @@ __all__ = [
     "initialise_fdr_dataclass",
     "initialise_dev_dataclass",
     "initialise_term_dataclass",
-    "build_term_fls"
+    "build_term_fls",
     "initialise_line_dataclass",
     "initialise_load_dataclass",
     # Utilities
