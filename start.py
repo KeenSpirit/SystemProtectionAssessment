@@ -230,25 +230,46 @@ def get_grid_data(grids: List, region: str) -> Dict:
     ]
 
     grid_data_import = load_source_z_data.grid_data_import(region)
+    matched = 0
 
     for grid in grids:
-        try:
-            scenario_dic = grid_data_import[grid]
-        except KeyError:
-            logger.warning(f"Could not load source z-data for {grid}. Kept defaults.")
-            grid_data[grid] = []
-            for attr in attributes:
-                grid_data[grid].extend(grid.GetAttribute(attr))
-            for attr in attributes[-5:]:
-                grid_data[grid].extend(grid.GetAttribute(attr))
+        # The workbooks are keyed by grid name, not by object.
+        name = grid.loc_name.strip()
+        scenario_dic = grid_data_import.get(name)
+
+        if scenario_dic is None:
+            logger.warning(
+                "No source z-data for external grid '%s'. Model "
+                "values kept.", name
+            )
+            # Read the model's own values: 5 max, 5 min, then the min
+            # values again as the system normal minimum.
+            current = [grid.GetAttribute(attr) for attr in attributes]
+            grid_data[grid] = current + current[-5:]
             continue
-        max_values = scenario_dic['max'][-5:]
-        min_values = scenario_dic['min'][-5:]
-        sn_min_values = scenario_dic['sn_min'][-5:]
-        grid_data[grid] = max_values + min_values + sn_min_values
+
+        # Element 0 of each list is the scenario name, not a value.
+        grid_data[grid] = (
+                scenario_dic['max'][-5:]
+                + scenario_dic['min'][-5:]
+                + scenario_dic['sn_min'][-5:]
+        )
 
         for i, attr in enumerate(attributes):
             grid.SetAttribute(attr, grid_data[grid][i])
+        matched += 1
+
+    if grids and not matched:
+        logger.error(
+            "None of the %s external grids matched the source z-data "
+            "for region '%s'. Every grid is running on model defaults "
+            "- check grid naming in the workbook.", len(grids), region
+        )
+    else:
+        logger.info(
+            "Source z-data applied to %s of %s external grids.",
+            matched, len(grids)
+        )
 
     return grid_data
 
