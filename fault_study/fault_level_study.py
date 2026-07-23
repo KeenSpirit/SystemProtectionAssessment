@@ -75,8 +75,6 @@ def fault_study(
 
     logger.info(f"Fault level study begins")
 
-
-
     for feeder in feeders:
         # Build device topology
         get_downstream_objects(app, region, feeder.devices)
@@ -85,30 +83,20 @@ def fault_study(
         get_device_sections(app, feeder.devices)
 
     # Define study configurations
-    study_configs = [
-        ('Max', 'Ground'), ('Max', '3-Phase'), ('Max', '2-Phase'),
-        ('Min', 'Ground'), ('Min', '3-Phase'), ('Min', '2-Phase'),
-        ('Min', 'Ground Z10'), ('Min', 'Ground Z50'),
-    ]
-    sn_study_configs = [
-        ('Min', '2-Phase'), ('Min', 'Ground'), ('Min', 'Ground Z10'),
-        ('Min', 'Ground Z50'),
-    ]
+    study_configs = [('Max', 'Ground'), ('Min', 'Ground')]
+    sn_study_configs = [('Min', 'Ground')]
 
     # Set all LV terminals OOS to speed up all-terminal short-circuit calculation
     if region == "Regional Models":
-        terminals = app.GetCalcRelevantObjects("*.ElmTerm")
-        term_dic = {}
+        terminals = [t for t in app.GetCalcRelevantObjects("*.ElmTerm") if t.GetAttribute("uknom") < 1]
         for term in terminals:
-            if term.GetAttribute("uknom") < 1:
-                term_dic[term] = term.GetAttribute("outserv")
-                term.SetAttribute("outserv", 1)
+            term.SetAttribute("outserv", 1)
 
     # Execute main fault studies
     for bound, fault_type in study_configs:
         analysis.short_circuit(app, bound, fault_type, consider_prot='None')
         for feeder in feeders:
-            terminal_fls(feeder.devices, bound=bound, f_type=fault_type)
+            terminal_z(feeder.devices, bound=bound, f_type=fault_type)
 
     # Handle system normal minimum studies
     if grid_equivalence_check(external_grid):
@@ -124,22 +112,25 @@ def fault_study(
             for bound, fault_type in sn_study_configs:
                 analysis.short_circuit(app, bound, fault_type, consider_prot='None')
                 for feeder in feeders:
-                    terminal_fls(feeder.devices, bound='SN_Min', f_type=fault_type)
+                    terminal_z(feeder.devices, bound='SN_Min', f_type=fault_type)
         finally:
             reset_min_source_imp(external_grid, sys_norm_min=False)
+            analysis.reset_sc_command(app)
 
     # Restore all Lv terminations to original state
-    if region == "Regional Models":
-        for term, status in term_dic.values():
-            term.SetAttribute("outserv", status)
+    if region == "Regional Models" and terminals:
+        for term in terminals:
+            term.SetAttribute("outserv", 0)
 
     for feeder in feeders:
-        # Determine construction types for fault impedance selection
-        fault_impedance.update_node_construction(feeder.devices)
-
         # Handle floating terminals
         floating_terms = ft.get_floating_terminals(feeder.obj, feeder.devices)
-        append_floating_terms(app, external_grid, feeder.devices, floating_terms, consider_prot='None')
+        append_floating_terms(feeder.devices, floating_terms)
+
+        build_feeder_fls(feeder.devices)
+
+        # Determine construction types for fault impedance selection
+        fault_impedance.update_node_construction(feeder.devices)
 
         # Update device and line data with results
         update_device_data(region, feeder.devices)
@@ -352,48 +343,22 @@ def get_device_sections(app: pft.Application, devices: List[ast.Device]) -> None
 # attribute that receives the resulting fault current.
 # An unrecognised combination raises rather than silently writing
 # to the 2-phase attribute.
-_TERMINAL_FL_ATTR = {
-    ('Max', 'Ground'): 'max_fl_pg',
-    ('Max', '3-Phase'): 'max_fl_3ph',
-    ('Max', '2-Phase'): 'max_fl_2ph',
-    ('Min', 'Ground'): 'min_fl_pg',
-    ('Min', 'Ground Z10'): 'min_fl_pg10',
-    ('Min', 'Ground Z50'): 'min_fl_pg50',
-    ('Min', '3-Phase'): 'min_fl_3ph',
-    ('Min', '2-Phase'): 'min_fl_2ph',
-    ('SN_Min', 'Ground'): 'min_sn_fl_pg',
-    ('SN_Min', 'Ground Z10'): 'min_sn_fl_pg10',
-    ('SN_Min', 'Ground Z50'): 'min_sn_fl_pg50',
-    ('SN_Min', '2-Phase'): 'min_sn_fl_2ph',
+_TERMINAL_Z_ATTR = {
+    ('Max', 'Ground'): ['max_r0', 'max_x0', 'max_r1', 'max_x1', 'max_r2', 'max_x2'],
+    ('Min', 'Ground'): ['min_r0', 'min_x0', 'min_r1', 'min_x1', 'min_r2', 'min_x2'],
+    ('SN_Min', 'Ground'): ['min_sn_r0', 'min_sn_x0', 'min_sn_r1', 'min_sn_x1', 'min_sn_r2', 'min_sn_x2']
 }
 
-
-def terminal_fls(
+def terminal_z(
     devices: List[ast.Device],
     bound: str,
     f_type: str
 ) -> None:
     """
-    Extract terminal fault currents from short-circuit study results.
-
-    Reads fault current results from PowerFactory and stores them
-    in the appropriate Termination dataclass attributes.
-
-    Args:
-        devices: List of Device dataclasses with sect_terms.
-        bound: Study bound - 'Max', 'Min', or 'SN_Min'.
-        f_type: Fault type - 'Ground', 'Ground Z10', 'Ground Z50',
-            '3-Phase', or '2-Phase'.
-
-    Raises:
-        ValueError: If the (bound, f_type) combination is not
-            recognised.
-
-    Side Effects:
-        Sets fault current attributes on Termination dataclasses.
+    Extract terminal impedances from short-circuit study results.
     """
-    attribute = _TERMINAL_FL_ATTR.get((bound, f_type))
-    if attribute is None:
+    attributes = _TERMINAL_Z_ATTR.get((bound, f_type))
+    if attributes is None:
         raise ValueError(
             f"Unknown fault study combination: bound={bound!r}, "
             f"f_type={f_type!r}"
@@ -401,110 +366,73 @@ def terminal_fls(
 
     for device in devices:
         for terminal in device.sect_terms:
-            current = analysis.get_terminal_current(terminal.obj)
-            setattr(terminal, attribute, current)
+            setattr(terminal, attributes[1], terminal.obj.GetAttribute('m:R0'))
+            setattr(terminal, attributes[2], terminal.obj.GetAttribute('m:X0'))
+            setattr(terminal, attributes[3], terminal.obj.GetAttribute('m:R1'))
+            setattr(terminal, attributes[1], terminal.obj.GetAttribute('m:X1'))
+            setattr(terminal, attributes[2], terminal.obj.GetAttribute('m:R2'))
+            setattr(terminal, attributes[3], terminal.obj.GetAttribute('m:X2'))
 
 
 def append_floating_terms(
-    app: pft.Application,
-    external_grid: Dict,
     devices: List[ast.Device],
     floating_terms: Dict,
-    consider_prot: str
 ) -> None:
     """
-    Calculate fault currents for floating terminals.
 
-    Floating terminals require fault calculations at specific line
-    locations rather than at busbars. This function performs those
-    calculations and adds the results to device section terminals.
-
-    Args:
-        app: PowerFactory application instance.
-        external_grid: Dictionary of external grid parameters.
-        devices: List of Device dataclasses.
-        floating_terms: Dictionary from get_floating_terminals().
-        consider_prot: Protection consideration mode.
-
-    Side Effects:
-        Appends Termination dataclasses to device.sect_terms.
+    :param devices:
+    :param floating_terms:
+    :return:
     """
     for dev, lines in floating_terms.items():
         for line, elmterm in lines.items():
-            # Determine fault location percentage
-            if line.bus1.cterm == elmterm:
-                ppro = 1
-            else:
-                ppro = 99
-
             termination = ast.initialise_term_dataclass(elmterm)
+            line_r0 = line.GetAttribute("R0")
+            line_x0 = line.GetAttribute("X0")
+            line_r1 = line.GetAttribute("R1")
+            line_x1 = line.GetAttribute("X1")
+            line_r2 = line.GetAttribute("R1")
+            line_x2 = line.GetAttribute("X1")
 
-            # Run fault studies at the line location
-            study_configs = [
-                ('Max', '3-Phase', 'max_fl_3ph'),
-                ('Max', '2-Phase', 'max_fl_2ph'),
-                ('Max', 'Ground', 'max_fl_pg'),
-                ('Min', '3-Phase', 'min_fl_3ph'),
-                ('Min', '2-Phase', 'min_fl_2ph'),
-                ('Min', 'Ground', 'min_fl_pg'),
-                ('Min', 'Ground Z10', 'min_fl_pg10'),
-                ('Min', 'Ground Z50', 'min_fl_pg50'),
-            ]
-
-            for bound, fault_type, attribute in study_configs:
-                analysis.short_circuit(
-                    app, bound, fault_type, consider_prot,
-                    location=line, relative=ppro
-                )
-                current = analysis.get_line_current(line)
-                if current is None:
-                    logger.warning(
-                        f"Floating terminal fault study returned no result: "
-                        f"{elmterm.loc_name} on line {line.loc_name} "
-                        f"({bound} {fault_type}); value left as None"
-                    )
-                setattr(termination, attribute, current)
-
-            # Handle system normal minimum
-            if grid_equivalence_check(external_grid):
-                termination.min_sn_fl_pg = termination.min_fl_pg
-                termination.min_sn_fl_pg10 = termination.min_fl_pg10
-                termination.min_sn_fl_pg50 = termination.min_fl_pg50
-                termination.min_sn_fl_2ph = termination.min_fl_2ph
+            if line.bus1.cterm == elmterm:
+                opposite_elmterm = line.bus2.cterm
             else:
-                sn_configs = [
-                    ('Min', '2-Phase', 'min_sn_fl_2ph'),
-                    ('Min', 'Ground', 'min_sn_fl_pg'),
-                    ('Min', 'Ground Z10', 'min_sn_fl_pg10'),
-                    ('Min', 'Ground Z50', 'min_sn_fl_pg50'),
-                ]
-                reset_min_source_imp(external_grid, sys_norm_min=True)
-                for bound, fault_type, attribute in sn_configs:
-                    analysis.short_circuit(
-                        app, bound, fault_type, consider_prot,
-                        location=line, relative=ppro
-                    )
-                    current = analysis.get_line_current(line)
-                    if current is None:
-                        logger.warning(
-                            f"Floating terminal fault study returned no result: "
-                            f"{elmterm.loc_name} on line {line.loc_name} "
-                            f"({bound} {fault_type}); value left as None"
-                        )
-                    setattr(termination, attribute, current)
-                reset_min_source_imp(external_grid, sys_norm_min=False)
+                opposite_elmterm = line.bus1.cterm
 
-            # Add to device section terminals
+            # Find opposite_term dataclass
             sect_terms = [
                 device.sect_terms for device in devices
                 if device.term == dev
             ][0]
+            opposite_t = [
+                t for t in sect_terms
+                if t.obj == opposite_elmterm
+            ][0]
+
+            terminal_z_attributes = [
+                ['max_r0', 'max_x0', 'max_r1', 'max_x1', 'max_r2', 'max_x2'],
+                ['min_r0', 'min_x0', 'min_r1', 'min_x1', 'min_r2', 'min_x2'],
+                ['min_sn_r0', 'min_sn_x0', 'min_sn_r1', 'min_sn_x1', 'min_sn_r2', 'min_sn_x2']
+            ]
+
+            # populate termination impedance values
+            for scenario in terminal_z_attributes:
+                setattr(termination, scenario[0], getattr(opposite_t, scenario[0]) + line_r0)
+                setattr(termination, scenario[1], getattr(opposite_t, scenario[1]) + line_x0)
+                setattr(termination, scenario[2], getattr(opposite_t, scenario[2]) + line_r1)
+                setattr(termination, scenario[3], getattr(opposite_t, scenario[3]) + line_x1)
+                setattr(termination, scenario[4], getattr(opposite_t, scenario[4]) + line_r2)
+                setattr(termination, scenario[5], getattr(opposite_t, scenario[5]) + line_x2)
+
+            # Add to device section terminals
             sect_terms.append(termination)
 
-    # Reset short-circuit command to default state
-    comshc = app.GetFromStudyCase("Short_Circuit.ComShc")
-    study_templates.apply_sc(comshc, bound='Max', f_type='Ground',
-                             consider_prot='All')
+
+def build_feeder_fls(devices: List[ast.Device]):
+
+    for device in devices:
+        for termination in device.sect_terms:
+            ast.build_term_fls(termination)
 
 
 def grid_equivalence_check(new_grid_data: Dict) -> bool:

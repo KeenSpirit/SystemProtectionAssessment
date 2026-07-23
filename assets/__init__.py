@@ -56,7 +56,7 @@ from assets.enums import (
 
 from assets.feeder import Feeder, initialise_fdr_dataclass
 from assets.device import Device, initialise_dev_dataclass
-from assets.termination import Termination, initialise_term_dataclass
+from assets.termination import Termination, initialise_term_dataclass, build_term_fls
 from assets.line import Line, initialise_line_dataclass
 from assets.transformer import Tfmr, initialise_load_dataclass
 
@@ -86,6 +86,7 @@ __all__ = [
     "initialise_fdr_dataclass",
     "initialise_dev_dataclass",
     "initialise_term_dataclass",
+    "build_term_fls"
     "initialise_line_dataclass",
     "initialise_load_dataclass",
     # Utilities

@@ -123,3 +123,11 @@ def get_line_current(elmlne: pft.ElmLne) -> Optional[float]:
 
     return round(max(currents) * 1000) if currents else None
 
+
+def reset_sc_command(app):
+
+    # Reset short-circuit command to default state
+    comshc = app.GetFromStudyCase("Short_Circuit.ComShc")
+    study_templates.apply_sc(comshc, bound='Max', f_type='Ground',
+                             consider_prot='All')
+

@@ -5,6 +5,7 @@ A termination represents a network terminal where fault studies are performed
 and protection reach is evaluated.
 """
 
+import math
 from dataclasses import dataclass
 from typing import Optional, TYPE_CHECKING
 
@@ -84,6 +85,26 @@ class Termination:
     min_sn_fl_pg10: Optional[float] = None
     min_sn_fl_pg50: Optional[float] = None
 
+    # Impedance values
+    max_r0: Optional[float] = None
+    max_x0: Optional[float] = None
+    max_r1: Optional[float] = None
+    max_x1: Optional[float] = None
+    max_r2: Optional[float] = None
+    max_x2: Optional[float] = None
+    min_r0: Optional[float] = None
+    min_x0: Optional[float] = None
+    min_r1: Optional[float] = None
+    min_x1: Optional[float] = None
+    min_r2: Optional[float] = None
+    min_x2: Optional[float] = None
+    min_sn_r0: Optional[float] = None
+    min_sn_x0: Optional[float] = None
+    min_sn_r1: Optional[float] = None
+    min_sn_x1: Optional[float] = None
+    min_sn_r2: Optional[float] = None
+    min_sn_x2: Optional[float] = None
+
 
 def initialise_term_dataclass(elmterm: "pft.ElmTerm") -> Optional[Termination]:
     """
@@ -111,3 +132,93 @@ def initialise_term_dataclass(elmterm: "pft.ElmTerm") -> Optional[Termination]:
         phases=ph_attr_lookup(elmterm.phtech),
         l_l_volts=round(elmterm.uknom, 2),
     )
+
+
+def build_term_fls(elmterm: "pft.ElmTerm"):
+
+    c_min_v = elmterm.l_l_volts
+    c_max_v = elmterm.l_l_volts * 1.1
+
+    # Maximums
+    if elmterm.phases == 3:
+        elmterm.max_fl_3ph = get_3p_fault(c_max_v, elmterm.max_r1, elmterm.max_x1)
+    else:
+        elmterm.max_fl_3ph = 0
+    if elmterm.phases > 1:
+        elmterm.max_fl_2ph = get_2p_fault(c_max_v, elmterm.max_r1, elmterm.max_x1, elmterm.max_r2, elmterm.max_x1)
+    else:
+        elmterm.max_fl_2ph = 0
+    elmterm.max_fl_pg = get_pg_fault(
+        c_max_v, elmterm.max_r0, elmterm.max_x0, elmterm.max_r1, elmterm.max_x1, elmterm.max_r2, elmterm.max_x2, 0)
+
+    # Minimums
+    if elmterm.phases == 3:
+        elmterm.min_fl_3ph = get_3p_fault(c_min_v, elmterm.min_r1, elmterm.min_x1)
+    else:
+        elmterm.min_fl_3ph = 0
+    if elmterm.phases > 1:
+        elmterm.min_fl_2ph = get_2p_fault(c_min_v, elmterm.min_r1, elmterm.min_x1, elmterm.min_r2, elmterm.min_x2)
+    else:
+        elmterm.min_fl_2ph = 0
+    elmterm.min_fl_pg = get_pg_fault(
+        c_min_v, elmterm.min_r0, elmterm.min_x0, elmterm.min_r1, elmterm.min_x1, elmterm.min_r2, elmterm.min_x2, 0)
+    elmterm.min_fl_pg10 = get_pg_fault(
+        c_min_v, elmterm.min_r0, elmterm.min_x0, elmterm.min_r1, elmterm.min_x1, elmterm.min_r2, elmterm.min_x2, 10)
+    elmterm.min_fl_pg50 = get_pg_fault(
+        c_min_v, elmterm.min_r0, elmterm.min_x0, elmterm.min_r1, elmterm.min_x1, elmterm.min_r2, elmterm.min_x2, 50)
+
+    # System Normal minimums
+    if elmterm.phases > 1:
+        elmterm.min_sn_fl_2ph = get_2p_fault(c_min_v, elmterm.min_sn_r1, elmterm.min_sn_x1, elmterm.min_sn_r2, elmterm.min_sn_x2)
+    else:
+        elmterm.min_sn_fl_2ph = 0
+    elmterm.min_sn_fl_pg = get_pg_fault(
+        c_min_v, elmterm.min_r0, elmterm.min_x0, elmterm.min_r1, elmterm.min_x1, elmterm.min_r2, elmterm.min_x2, 0)
+    elmterm.min_sn_fl_pg10 = get_pg_fault(
+        c_min_v, elmterm.min_sn_r0, elmterm.min_sn_x0, elmterm.min_sn_r1, elmterm.min_sn_x1, elmterm.min_sn_r2, elmterm.min_sn_x2, 10)
+    elmterm.min_sn_fl_pg50 = get_pg_fault(
+        c_min_v, elmterm.min_sn_r0, elmterm.min_sn_x0, elmterm.min_sn_r1, elmterm.min_sn_x1, elmterm.min_sn_r2, elmterm.min_sn_x2, 50)
+
+
+def get_3p_fault(v, r1, x1) -> float:
+    """
+
+    :param v:
+    :param r1:
+    :param x1:
+    :return:
+    """
+    z1 = math.sqrt(r1^2 + x1^2)
+    return  v / z1
+
+
+def get_2p_fault(v, r1, x1, r2, x2) -> float:
+    """
+
+    :param v:
+    :param r1:
+    :param x1:
+    :param r2:
+    :param x2:
+    :return:
+    """
+    z = math.sqrt((r1+r2)**2 + (x1+x2)**2)
+    return v / z
+
+
+def get_pg_fault(v, r0, x0, r1, x1, r2, x2, rf) -> float:
+    """
+
+    :param v:
+    :param r0:
+    :param r1:
+    :param r2:
+    :param rf:
+    :param x0:
+    :param x1:
+    :param x2:
+    :return:
+    """
+    l_g_v = v / math.sqrt(3)
+    z = math.sqrt((r0 + r1 + r2 + 3 * rf) ** 2 + (x0 + x1 + x2) ** 2)
+    return 3 * l_g_v / z
