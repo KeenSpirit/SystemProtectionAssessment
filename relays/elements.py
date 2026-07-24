@@ -11,9 +11,55 @@ Functions:
 """
 
 from typing import Dict, List, Union, TYPE_CHECKING
+import logging
 
 if TYPE_CHECKING:
     from pf_config import pft
+
+logger = logging.getLogger(__name__)
+
+# Only warn once per (class, attribute) — this runs per element, per
+# device, per fault study, and would otherwise flood the JSONL log.
+_ATTR_WARNED: set = set()
+
+
+def _safe_attr(obj, attribute: str, default=None):
+    """
+    Resolve a (possibly chained) PowerFactory attribute, tolerating a
+    broken chain.
+
+    GetAttribute("r:typ_id:e:sfiec") raises AttributeError when the
+    element has no type assigned, or when the assigned type class does
+    not carry the requested field. Both are model-data conditions, not
+    code faults, so return `default` and let the caller filter the
+    element out rather than killing the project.
+    """
+    try:
+        return obj.GetAttribute(attribute)
+    except AttributeError:
+        key = (obj.GetClassName(), attribute)
+        if key not in _ATTR_WARNED:
+            _ATTR_WARNED.add(key)
+            logger.warning(
+                "%s cannot resolve '%s' (first seen on %s); "
+                "such elements are excluded from pickup determination",
+                key[0], attribute, obj.loc_name,
+            )
+        return default
+
+
+def _is_definite_time(element) -> bool:
+    """
+    True when the element's characteristic is a definite-time curve.
+
+    An element with no characteristic assigned is treated as *not*
+    definite time, preserving the original filter's intent of keeping
+    everything that isn't explicitly definite time.
+    """
+    charac = getattr(element, "pcharac", None)
+    if charac is None:
+        return False
+    return "definite" in charac.loc_name.lower()
 
 
 def get_all_relays(app: "pft.Application") -> List["pft.ElmRelay"]:
@@ -92,49 +138,49 @@ def get_prot_elements(
     oc_idmt_elements = [
         element
         for element in idmt_elements
-        if element.GetAttribute("r:typ_id:e:sfiec") == "I>t"
-        if "definite" not in element.pcharac.loc_name.lower()
+        if _safe_attr(element, "r:typ_id:e:sfiec") == "I>t"
+        if not _is_definite_time(element)
     ]
 
     # Phase overcurrent instantaneous elements
     oc_inst_element = [
         element
         for element in device_pf.GetContents("*.RelIoc", True)
-        if element.GetAttribute("r:typ_id:e:sfiec") == "I>>"
+        if _safe_attr(element, "r:typ_id:e:sfiec") == "I>>"
         if not element.IsOutOfService()
-        if element.GetAttribute("r:typ_id:e:irecltarget")
+        if _safe_attr(element, "r:typ_id:e:irecltarget")
     ]
 
     # Earth fault IDMT elements
     ef_idmt_elements = [
         element
         for element in idmt_elements
-        if element.GetAttribute("r:typ_id:e:sfiec") == "IE>t"
-        if "definite" not in element.pcharac.loc_name.lower()
+        if _safe_attr(element, "r:typ_id:e:sfiec") == "IE>t"
+        if not _is_definite_time(element)
     ]
 
     # Earth fault instantaneous elements
     ef_inst_element = [
         element
         for element in device_pf.GetContents("*.RelIoc", True)
-        if element.GetAttribute("r:typ_id:e:sfiec") == "IE>>"
+        if _safe_attr(element, "r:typ_id:e:sfiec") == "IE>>"
         if not element.IsOutOfService()
-        if element.GetAttribute("r:typ_id:e:irecltarget")
+        if _safe_attr(element, "r:typ_id:e:irecltarget")
     ]
 
     # Negative phase sequence IDMT elements
     nps_idmt_elements = [
         element
         for element in idmt_elements
-        if element.GetAttribute("r:typ_id:e:sfiec") == "I2>t"
+        if _safe_attr(element, "r:typ_id:e:sfiec") == "I2>t"
     ]
 
     # Negative phase sequence instantaneous elements
     nps_inst_elements = [
         element
         for element in device_pf.GetContents("*.RelIoc", True)
-        if element.GetAttribute("r:typ_id:e:sfiec") == "I2>>"
-        if element.GetAttribute("r:typ_id:e:irecltarget")
+        if _safe_attr(element, "r:typ_id:e:sfiec") == "I2>>"
+        if _safe_attr(element, "r:typ_id:e:irecltarget")
         if not element.IsOutOfService()
     ]
 
