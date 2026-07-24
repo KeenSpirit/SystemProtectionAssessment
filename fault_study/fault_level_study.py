@@ -94,7 +94,9 @@ def fault_study(
 
     # Execute main fault studies
     for bound, fault_type in study_configs:
+        app.PrintPlain(f"performing short circuit for {bound}")
         analysis.short_circuit(app, bound, fault_type, consider_prot='None')
+        app.PrintPlain(f"Finished short circuit for {bound}")
         for feeder in feeders:
             terminal_z(feeder.devices, bound=bound, f_type=fault_type)
 
@@ -110,7 +112,9 @@ def fault_study(
         reset_min_source_imp(external_grid, sys_norm_min=True)
         try:
             for bound, fault_type in sn_study_configs:
+                app.PrintPlain(f"performing short circuit for SN_Min")
                 analysis.short_circuit(app, bound, fault_type, consider_prot='None')
+                app.PrintPlain(f"Finished short circuit for SN_Min")
                 for feeder in feeders:
                     terminal_z(feeder.devices, bound='SN_Min', f_type=fault_type)
         finally:

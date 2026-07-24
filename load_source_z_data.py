@@ -54,7 +54,7 @@ logger = logging.getLogger(__name__)
 
 # Folder holding the published source-impedance studies, relative to the
 # repository root (the directory containing this module).
-SOURCE_Z_DIR_NAME = "Source Impedances"
+SOURCE_Z_DIR_NAME = "data"
 
 # Preferred file names, with a glob fallback so that an annual re-issue
 # (e.g. "2027 Fault Level Report ...") is still picked up. The resolved
