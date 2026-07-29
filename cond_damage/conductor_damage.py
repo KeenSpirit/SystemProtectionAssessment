@@ -32,12 +32,19 @@ from assets.enums import ElementType
 logger = logging.getLogger(__name__)
 
 # Fault-current resolution (A) for the worst-case energy search.
-# fault_clear_times evaluates clearing time at each fault level from
-# line minimum to maximum in steps of this size; the step that yields
-# the greatest I2t is reported. Smaller = finer peak detection but
-# proportionally more PF curve evaluations per line per trip. 10 A is
-# the validated production value; raising it is the first lever if
-# conductor-damage runtime dominates a batch run.
+# fault_clear_times evaluates clearing time at each fault level
+# according to the interval selection:
+# INTERVAL = "full": composed of equidistant step sizes between
+# min fault level and max fault level.
+# INTERVAL = "partial": composed of only the element hisets between
+# min fault level and max fault level.
+INTERVAL = "full"
+# When INTERVAL = "full", fault_clear_times evaluates clearing time
+# at each fault level from line minimum to maximum in steps of size
+# FL_STEP_AMPS; the step that yields the greatest I2t is reported.
+# Smaller = finer peak detection but proportionally more PF curve
+# evaluations per line per trip. 10 A is
+# the validated production value.
 FL_STEP_AMPS = 10
 
 
@@ -247,39 +254,32 @@ def fault_clear_times(
             device, line, fault_type
         )
 
-    # range() requires integers
-    min_fl = int(min_fl)
-    max_fl = int(max_fl)
-
-    device_obj = device.obj
-    # Create a list of fault levels in the interval of min and max fault
-    # currents. Two intervals may be assessed:
-    # fl_interval_1 is composed of equidistant step sizes between
-    # min fault level and max fault level
-    # fl_interval_2 is composed of only the element hisets between
-    # min fault level and max fault level
-
-    # Create fault level range
-    fl_interval_1 = range(min_fl, max_fl + 1, fl_step)
-    # Initialise fl_interval_2
-    # fl_interval_2 = [min_fl, max_fl]
-
     # Select only the elements capable of detecting the fault type
     # and enabled for the current auto-reclose iteration
+    device_obj = device.obj
     if device_obj.GetClassName() == ElementType.FUSE.value:
         active_elements = [device_obj]
     else:
         all_elements = elements.get_prot_elements(device_obj)
         active_elements = elements.get_active_elements(all_elements, fault_type)
-        # hisets = [
-        #     element.GetAttribute("e:cpIpset") - 1 for element in active_elements
-        #           if element.GetClassName() == 'RelIoc']
-        # fl_interval_2 = fl_interval_2 + hisets
+
+    # Create a list of fault levels in the interval of min and max fault
+    # currents.
+    # range() requires integers
+    min_fl = int(min_fl)
+    max_fl = int(max_fl)
+    if INTERVAL == "full":
+        fl_interval = range(min_fl, max_fl + 1, fl_step)
+    else:
+        hisets = [
+            element.GetAttribute("e:cpIpset") - 1 for element in active_elements
+                  if element.GetClassName() == 'RelIoc']
+        fl_interval = [min_fl, max_fl] + hisets
 
     # Initialise fault level:min operating time dictionary
-    min_fl_clear_times = {fault_level: None for fault_level in fl_interval_1}
+    min_fl_clear_times = {fault_level: None for fault_level in fl_interval}
     for element in active_elements:
-        for fault_level in fl_interval_1:
+        for fault_level in fl_interval:
             # Calculate protection operate time for element and fl
             if element.GetClassName() == ElementType.FUSE.value:
                 operate_time = fuse_clear_time(element, fault_level)

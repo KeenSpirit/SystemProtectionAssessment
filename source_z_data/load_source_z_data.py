@@ -56,33 +56,27 @@ logger = logging.getLogger(__name__)
 # repository root (the directory containing this module).
 SOURCE_Z_DIR_NAME = "data"
 
-# Preferred file names, with a glob fallback so that an annual re-issue
-# (e.g. "2027 Fault Level Report ...") is still picked up. The resolved
-# file is logged on every read so the provenance is in the run log.
-REGIONAL_WORKBOOK = "2026 Fault Level Report (Ergon - Internal)_V1_1.xlsx"
+# Preferred file names
+REGIONAL_WORKBOOK = "grid_results_ee"
 REGIONAL_WORKBOOK_GLOB = "*Fault Level Report*.xlsx"
-SEQ_WORKBOOK = "grid_results_all.xlsx"
-SEQ_WORKBOOK_GLOB = "grid_results*.xlsx"
+SEQ_WORKBOOK = "grid_results_egx.xlsx"
+SEQ_WORKBOOK_GLOB = "grid_results_egx*.xlsx"
 
 # Sheet names. Matching is whitespace/punctuation tolerant.
-REGIONAL_MIN_SHEET = "Min Fault Level Report"
-REGIONAL_MAX_SHEET = "Max-Max Fault Level Report"
+REGIONAL_SHEET = "Grid Results"
 SEQ_SHEET = "Grid Results"
 
-# Regional report column layout (1-based).
-_REG_KEY_COL = 4        # D - Reported on Bus in PowerFactory
-_REG_FIRST_VAL_COL = 22  # V - PowerFactory short-circuit current
-_REG_LAST_VAL_COL = 26   # Z - PowerFactory R0/X0 ratio
 
-# SEQ workbook column layout (1-based).
-_SEQ_KEY_COL = 2         # B - Grid, the outer dictionary key
-_SEQ_BOUND_COL = 4       # D - Bound ("Max" / "Min")
-_SEQ_FIRST_VAL_COL = 5   # E - Scenario
-_SEQ_LAST_VAL_COL = 10   # J - R0/X1
+# Workbook column layout (1-based).
+_KEY_COL = 2         # B - Grid, the outer dictionary key
+_BOUND_COL = 4       # D - Bound ("Max" / "Min")
+_FIRST_VAL_COL = 5   # E - Scenario
+_LAST_VAL_COL = 10   # J - R0/X1
 
 SCENARIO_SYSTEM_NORMAL = "System Normal"
 BOUND_MAX = "Max"
 BOUND_MIN = "Min"
+BOUND_MIN_SN = "Min_SN"
 
 # ElmXnet holds ikss in kA. The Ergon report already publishes kA; the
 # SEQ workbook publishes amps in column F, so it is converted on read
@@ -177,101 +171,73 @@ def clear_cache() -> None:
 
 def _build_regional(workbook: Path) -> Dict[str, Dict[str, List[Any]]]:
     """
-    Build the grid data dictionary from the Ergon fault level report.
+    Build the grid data dictionary from the Ergon grid results.
 
-    Keys are taken from column D of the "Min Fault Level Report" tab in
-    sheet order; the first occurrence of a duplicated key wins. 'max' is
-    read from the matching column D row of the "Max-Max Fault Level
-    Report" tab, 'min' from the row the key came from, and 'sn_min' is a
-    copy of 'min'. A key with no "Max-Max" match is omitted entirely.
+    Grids are keyed by column B. Each contributes three rows: a "Max"
+    row, a "Min" contingency row and a "Min_SN" system normal row. Where a
+    grid publishes no contingency minimum, 'min' falls back to the
+    first "Min" row of any scenario. 
 
     Args:
-        workbook: Path to the Ergon fault level report.
+        workbook: Path to grid_results_all.xlsx.
 
     Returns:
         The grid data dictionary.
     """
     grid_data: Dict[str, Dict[str, List[Any]]] = {}
-    no_max: List[str] = []
+    incomplete: List[str] = []
     bad_values: List[str] = []
+    min_fallback: List[str] = []
 
     wb = load_workbook(workbook, read_only=True, data_only=True)
     try:
-        min_sheet = _resolve_sheet(wb, REGIONAL_MIN_SHEET, workbook)
-        max_sheet = _resolve_sheet(wb, REGIONAL_MAX_SHEET, workbook)
+        sheet = _resolve_sheet(wb, SEQ_SHEET, workbook)
+        by_grid = _group_rows(sheet)
 
-        max_values = _first_match_by_key(max_sheet)
+        for key, rows in by_grid.items():
+            maximum = _select_row(rows, BOUND_MAX)
+            sn_minimum = _select_row(
+                rows, BOUND_MIN_SN
+            )
+            minimum = _select_row(
+                rows, BOUND_MIN
+            )
 
-        for key, min_row in _iter_regional_rows(min_sheet):
-            if key in grid_data:
+            if minimum is None:
+                # 31 grids in the 2026 issue publish no contingency
+                # row, only system normal minimums. The spec falls
+                # back to any "Min" row in that case.
+                minimum = _select_row(rows, BOUND_MIN)
+                if minimum is not None:
+                    min_fallback.append(key)
+
+            if maximum is None or minimum is None or sn_minimum is None:
+                incomplete.append(key)
                 continue
 
-            max_row = max_values.get(key)
-            if max_row is None:
-                no_max.append(key)
-                continue
-
-            if not (_all_numeric(min_row) and _all_numeric(max_row)):
+            if not all(
+                    _all_numeric(row[1:]) for row in (maximum, minimum, sn_minimum)
+            ):
                 bad_values.append(key)
                 continue
 
-            minimum = [SCENARIO_SYSTEM_NORMAL] + list(min_row)
             grid_data[key] = {
-                "max": [SCENARIO_SYSTEM_NORMAL] + list(max_row),
+                "max": maximum,
                 "min": minimum,
-                # 'sn_min' is a copy, not the same list object, so a
-                # later mutation of one cannot silently alter the other.
-                "sn_min": list(minimum),
+                "sn_min": sn_minimum,
             }
     finally:
         wb.close()
 
-    _log_omissions(workbook, no_max, bad_values)
+    if min_fallback:
+        logger.info(
+            "%s grids in %s publish no contingency minimum; the first "
+            "'Min' row was used for 'min'. First few: %s",
+            len(min_fallback), workbook.name, min_fallback[:5]
+        )
+    _log_omissions(workbook, incomplete, bad_values)
     _check_ikss_units(workbook, grid_data)
     return grid_data
-
-
-def _iter_regional_rows(sheet) -> Iterator[Tuple[str, List[Any]]]:
-    """
-    Yield (key, values) for each data row of a fault level report tab.
-
-    Args:
-        sheet: An openpyxl worksheet for one of the report tabs.
-
-    Yields:
-        Tuples of the stripped column D key and the column V-Z values.
-    """
-    for row in sheet.iter_rows(
-        min_row=2, max_col=_REG_LAST_VAL_COL, values_only=True
-    ):
-        key = _clean(_cell(row, _REG_KEY_COL))
-        if not key:
-            continue
-        values = [
-            _cell(row, col)
-            for col in range(_REG_FIRST_VAL_COL, _REG_LAST_VAL_COL + 1)
-        ]
-        yield key, values
-
-
-def _first_match_by_key(sheet) -> Dict[str, List[Any]]:
-    """
-    Index a fault level report tab by column D, keeping the first match.
-
-    The "Max-Max Fault Level Report" tab repeats some bus names; the
-    spec calls for the first matching row, so later rows are discarded.
-
-    Args:
-        sheet: An openpyxl worksheet for one of the report tabs.
-
-    Returns:
-        Dict mapping the column D key to its column V-Z values.
-    """
-    indexed: Dict[str, List[Any]] = {}
-    for key, values in _iter_regional_rows(sheet):
-        indexed.setdefault(key, values)
-    return indexed
-
 
 # =============================================================================
 # SEQ (ENERGEX)
@@ -301,14 +267,14 @@ def _build_seq(workbook: Path) -> Dict[str, Dict[str, List[Any]]]:
     wb = load_workbook(workbook, read_only=True, data_only=True)
     try:
         sheet = _resolve_sheet(wb, SEQ_SHEET, workbook)
-        by_grid = _group_seq_rows(sheet)
+        by_grid = _group_rows(sheet)
 
         for key, rows in by_grid.items():
-            maximum = _select_seq_row(rows, BOUND_MAX)
-            sn_minimum = _select_seq_row(
+            maximum = _select_row(rows, BOUND_MAX)
+            sn_minimum = _select_row(
                 rows, BOUND_MIN, scenario_is_system_normal=True
             )
-            minimum = _select_seq_row(
+            minimum = _select_row(
                 rows, BOUND_MIN, scenario_is_system_normal=False
             )
 
@@ -316,7 +282,7 @@ def _build_seq(workbook: Path) -> Dict[str, Dict[str, List[Any]]]:
                 # 31 grids in the 2026 issue publish no contingency
                 # row, only system normal minimums. The spec falls
                 # back to any "Min" row in that case.
-                minimum = _select_seq_row(rows, BOUND_MIN)
+                minimum = _select_row(rows, BOUND_MIN)
                 if minimum is not None:
                     min_fallback.append(key)
 
@@ -349,7 +315,7 @@ def _build_seq(workbook: Path) -> Dict[str, Dict[str, List[Any]]]:
     return grid_data
 
 
-def _group_seq_rows(sheet) -> Dict[str, List[List[Any]]]:
+def _group_rows(sheet) -> Dict[str, List[List[Any]]]:
     """
     Group the "Grid Results" rows by their outer dictionary key.
 
@@ -363,15 +329,15 @@ def _group_seq_rows(sheet) -> Dict[str, List[List[Any]]]:
     by_grid: Dict[str, List[List[Any]]] = {}
 
     for row in sheet.iter_rows(
-        min_row=2, max_col=_SEQ_LAST_VAL_COL, values_only=True
+        min_row=2, max_col=_LAST_VAL_COL, values_only=True
     ):
-        key = _clean(_cell(row, _SEQ_KEY_COL))
+        key = _clean(_cell(row, _KEY_COL))
         if not key:
             continue
-        bound = _clean(_cell(row, _SEQ_BOUND_COL))
+        bound = _clean(_cell(row, _BOUND_COL))
         values = [
             _cell(row, col)
-            for col in range(_SEQ_FIRST_VAL_COL, _SEQ_LAST_VAL_COL + 1)
+            for col in range(_FIRST_VAL_COL, _LAST_VAL_COL + 1)
         ]
         # Scenario is a label, not a measurement; strip it here so
         # comparisons and the returned list agree.
@@ -381,7 +347,7 @@ def _group_seq_rows(sheet) -> Dict[str, List[List[Any]]]:
     return by_grid
 
 
-def _select_seq_row(
+def _select_row(
     rows: List[List[Any]],
     bound: str,
     scenario_is_system_normal: Optional[bool] = None,
@@ -433,7 +399,7 @@ def _to_ka(row: List[Any]) -> List[Any]:
 
 def _default_source_dir() -> Path:
     """Return the ``Source Impedances`` folder beside this module."""
-    return Path(__file__).resolve().parent / SOURCE_Z_DIR_NAME
+    return Path(__file__).parent.parent / SOURCE_Z_DIR_NAME
 
 
 def _resolve_workbook(

@@ -122,7 +122,7 @@ def begin(
     logger.info(f"{len(feeders)} feeders to assess")
 
     # Add "Conductor Damage Assessment" to study_selections for a conductor damage assessment
-    study_selections = ["Fault Level Study (all relays configured in model)"]
+    study_selections = ["Fault Level Study (all relays configured in model)", "Conductor Damage Assessment"]
     # Process feeders
     for i, feeder in enumerate(feeders, start=1):
         name = getattr(feeder.obj, "loc_name", str(feeder.obj))
