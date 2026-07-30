@@ -298,7 +298,13 @@ def save_dataframe(
         # Summary Results sheet: every feeder's devices stacked into one
         # table, written in a single call so the sheet is one contiguous
         # range that post-processing can read as a table.
-        summary_frames = [key[0] for key in fault_studies_pd.values()]
+        # Empty frames must be excluded: an all-object empty frame wins
+        # the dtype negotiation in pd.concat and turns every numeric
+        # column into object, which pandas 3.x does not warn about.
+        summary_frames = [
+            key[0] for key in fault_studies_pd.values()
+            if not key[0].empty
+        ]
 
         if summary_frames:
             summary_df = pd.concat(summary_frames, ignore_index=True)
@@ -316,7 +322,10 @@ def save_dataframe(
 
         # Detailed Results sheet: every device on every feeder stacked
         # into one table, written in a single call.
-        detailed_frames = [key[1] for key in fault_studies_pd.values()]
+        detailed_frames = [
+            key[1] for key in fault_studies_pd.values()
+            if not key[1].empty
+        ]
 
         if detailed_frames:
             detailed_df = pd.concat(detailed_frames, ignore_index=True)
@@ -757,6 +766,13 @@ def _padded(values: Optional[List], length: int) -> List:
 
     if len(values) < length:
         return list(values) + [None] * (length - len(values))
+
+    if len(values) > length:
+        logger.warning(
+            "Reach factor list of %s values truncated to %s terminals; "
+            "device_reach_factors returned more values than elements.",
+            len(values), length
+        )
 
     return list(values[:length])
 
