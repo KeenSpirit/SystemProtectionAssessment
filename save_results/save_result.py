@@ -8,7 +8,7 @@ Output files are saved to the user's local directory.
 Output Sheets:
     - General Information: Study parameters, grid data, settings
     - Summary Results: One row per device across all feeders
-    - {Feeder} Detailed Results: Terminal-by-terminal analysis
+    - Detailed Results: One row per terminal across all devices
     - {Feeder} Cond Dmg Res: Conductor damage results (if selected)
 
 Functions:
@@ -17,7 +17,7 @@ Functions:
     format_fl_results: Format fault level results per feeder
     format_study_results: Format one feeder's device summary rows
     format_open_points: Join a feeder's open point names
-    format_detailed_results: Format terminal-level results
+    format_detailed_results: Format one feeder's terminal-level rows
 """
 
 from pathlib import Path
@@ -48,7 +48,7 @@ reload(fault_impedance)
 reload(cd)
 
 # =============================================================================
-# SUMMARY RESULTS LAYOUT
+# SHEET LAYOUTS
 # =============================================================================
 
 # Column order for the flat Summary Results table. The first two columns
@@ -78,6 +78,46 @@ SUMMARY_COLUMNS = [
     'Downstream Devices',
     'Back-up Device',
     'Feeder Open Points',
+]
+
+# Column order for the flat Detailed Results table. 'Feeder' and
+# 'Primary Protection' identify the row; 'Termination' replaces the
+# device-named column of the old per-device blocks, which is what made
+# those blocks impossible to stack.
+#
+# The NPS columns are always present, even though a device with all NPS
+# elements out of service contributes no NPS values (see nps_oos). A
+# fixed schema means every project in the fleet produces an identically
+# shaped sheet, which a varying one would not; devices without NPS get
+# blank cells rather than a missing column.
+DETAILED_COLUMNS = [
+    'Feeder',
+    'Primary Protection',
+    'Tfmr Size (kVA)',
+    'Termination',
+    'Construction',
+    'Max 3P fault',
+    'Max 2P fault',
+    'Max PG fault',
+    'Min 3P fault',
+    'Min 2P fault',
+    'Min PG fault',
+    'Min SN 2P fault',
+    'Min SN PG fault',
+    'EF PRI PU',
+    'EF BU PU',
+    'PH PRI PU',
+    'PH BU PU',
+    'NPS PRI PU',
+    'NPS BU PU',
+    'EF PRI RF',
+    'EF BU RF',
+    'PH PRI RF',
+    'PH BU RF',
+    'NPS EF PRI RF',
+    'NPS EF BU RF',
+    'NPS PH PRI RF',
+    'NPS PH BU RF',
 ]
 
 # =============================================================================
@@ -225,7 +265,7 @@ def save_dataframe(
     grid_data_df = pd.DataFrame(formatted_grid_data)
     grid_data_df = clean_dataframe(grid_data_df)
 
-    fault_studies_pd = format_fl_results(app, region, feeders)
+    fault_studies_pd = format_fl_results(region, feeders)
 
     # Regional fault impedance values
     if region == 'SEQ':
@@ -274,44 +314,27 @@ def save_dataframe(
             index=False
         )
 
-        # Detailed Results sheets
-        for feeder, key in fault_studies_pd.items():
-            dfls_list = key[1]
+        # Detailed Results sheet: every device on every feeder stacked
+        # into one table, written in a single call.
+        detailed_frames = [key[1] for key in fault_studies_pd.values()]
 
-            # Write detailed results
-            safe_feeder_name = create_safe_sheet_name(
-                f"{str(feeder)} Detailed Results"
-            )
+        if detailed_frames:
+            detailed_df = pd.concat(detailed_frames, ignore_index=True)
+        else:
+            detailed_df = pd.DataFrame(columns=DETAILED_COLUMNS)
 
-            count = 0
-            for device in dfls_list:
-                device_name = (
-                    str(device.columns[1])
-                    if len(device.columns) > 1
-                    else "Unknown Device"
-                )
-                device = clean_dataframe(device)
-                device = ensure_numeric_types(device)
-                device.to_excel(
-                    writer,
-                    sheet_name=safe_feeder_name,
-                    startrow=1,
-                    startcol=count,
-                    index=False
-                )
+        detailed_df = clean_dataframe(detailed_df)
+        detailed_df = ensure_numeric_types(detailed_df)
+        detailed_df.to_excel(
+            writer,
+            sheet_name='Detailed Results',
+            startrow=0,
+            index=False
+        )
 
-                sheet = workbook[safe_feeder_name]
-                start_col = get_column_letter(count + 1)
-                sheet[f"{start_col}1"].font = Font(size=11, bold=True)
-                safe_set_cell(
-                    sheet,
-                    f"{start_col}1",
-                    f'Primary protection: {device_name}'
-                )
-                count = count + (len(device.columns) + 2)
-
-            # Conductor Damage Results
-            if 'Conductor Damage Assessment' in study_selections:
+        # Conductor Damage Results: still one sheet per feeder.
+        if 'Conductor Damage Assessment' in study_selections:
+            for feeder in fault_studies_pd:
                 devices = [
                     fdr.devices
                     for fdr in feeders
@@ -337,17 +360,15 @@ def save_dataframe(
     ws = wb['Summary Results']
     adjust_summ_col_size(ws)
 
-    for feeder in fault_studies_pd:
-        safe_name = create_safe_sheet_name(f"{str(feeder)} Detailed Results")
-        if safe_name in wb.sheetnames:
-            ws = wb[safe_name]
-            adjust_detailed_col_size(ws)
+    ws = wb['Detailed Results']
+    adjust_detailed_col_size(ws)
 
-            if 'Conductor Damage Assessment' in study_selections:
-                sheet_name = create_safe_sheet_name(f"{feeder} Cond Dmg Res")
-                if sheet_name in wb.sheetnames:
-                    ws = wb[sheet_name]
-                    adjust_cond_damage_col_width(ws)
+    if 'Conductor Damage Assessment' in study_selections:
+        for feeder in fault_studies_pd:
+            sheet_name = create_safe_sheet_name(f"{feeder} Cond Dmg Res")
+            if sheet_name in wb.sheetnames:
+                ws = wb[sheet_name]
+                adjust_cond_damage_col_width(ws)
 
     wb.save(filepath)
     logger.info(f"Output file saved to {filepath}")
@@ -434,33 +455,34 @@ def format_grid_data(ext_grid: Dict) -> Dict:
     return formatted_grid_data
 
 
-def format_fl_results(app: pft.Application, region: str, feeders: List) -> Dict:
+def format_fl_results(region: str, feeders: List) -> Dict:
     """
     Format fault level results for all feeders.
 
     Args:
-        app: PowerFactory application instance.
         region: Network region string.
         feeders: List of Feeder dataclasses.
 
     Returns:
         Dictionary mapping feeder names to lists containing:
-        [summary_df, detailed_results_list]
+        [summary_df, detailed_df]
 
-        The per-feeder summary frames all share ``SUMMARY_COLUMNS`` and
-        are concatenated by ``save_dataframe`` into one Summary Results
-        table. Open points are carried inside the summary frame, so the
-        separate open-points frame no longer exists.
+        The per-feeder frames share ``SUMMARY_COLUMNS`` and
+        ``DETAILED_COLUMNS`` respectively, and are concatenated by
+        ``save_dataframe`` into one Summary Results table and one
+        Detailed Results table. Open points are carried inside the
+        summary frame, so the separate open-points frame no longer
+        exists.
     """
     fault_studies_pd = {}
 
     for feeder in feeders:
         summary_df = format_study_results(feeder)
-        dfls_list = format_detailed_results(app, region, feeder.devices)
+        detailed_df = format_detailed_results(region, feeder)
 
         fault_studies_pd[feeder.obj.loc_name] = [
             summary_df,
-            dfls_list
+            detailed_df
         ]
 
     return fault_studies_pd
@@ -562,37 +584,40 @@ def format_open_points(feeder) -> str:
     return ', '.join(str(op.loc_name) for op in open_points)
 
 
-def format_detailed_results(
-    app: pft.Application,
-    region: str,
-    devices: List
-) -> List[pd.DataFrame]:
+def format_detailed_results(region: str, feeder) -> pd.DataFrame:
     """
-    Format detailed terminal-level results for each device.
+    Format one feeder's terminal-level results as rows of the flat table.
 
-    Creates a DataFrame for each device containing fault levels and
-    reach factors at each terminal in the protection section.
+    Each of the feeder's devices contributes one row per terminal in its
+    protection section, tagged with the feeder name and the device name,
+    so that all devices on all feeders stack into a single table.
+
+    Rows remain sorted by 'Max PG fault' descending within each device,
+    and devices appear in ``feeder.devices`` order.
 
     Args:
-        app: PowerFactory application instance.
-        region: Network region string.
-        devices: List of Device dataclasses.
+        region: Network region string ('SEQ' or 'Regional Models').
+        feeder: Feeder dataclass with ``obj`` and ``devices``.
 
     Returns:
-        List of DataFrames, one per device.
+        DataFrame with exactly the ``DETAILED_COLUMNS`` columns. Devices
+        with no in-service NPS elements leave the NPS columns blank.
     """
-    dfls_list = []
+    feeder_name = str(feeder.obj.loc_name)
+    frames = []
 
-    for device in devices:
+    for device in feeder.devices:
         device_name = str(device.obj.loc_name)
         elements = device.sect_terms
 
         # Calculate reach factors
         dev_reach_factors = device_reach_factors(region, device, elements)
 
+        count = len(elements)
+
         fault_levels = {
-            'Tfmr Size (kVA)': [None] * len(elements),
-            device_name: [e.obj.loc_name for e in elements],
+            'Tfmr Size (kVA)': [None] * count,
+            'Termination': [str(e.obj.loc_name) for e in elements],
             'Construction': [e.constr for e in elements],
             'Max 3P fault': [safe_numeric(e.max_fl_3ph) for e in elements],
             'Max 2P fault': [safe_numeric(e.max_fl_2ph) for e in elements],
@@ -605,59 +630,87 @@ def format_detailed_results(
         }
 
         pick_ups = {
-            'EF PRI PU': dev_reach_factors.get('ef_pickup', []),
-            'EF BU PU': dev_reach_factors.get('bu_ef_pickup', []),
-            'PH PRI PU': dev_reach_factors.get('ph_pickup', []),
-            'PH BU PU': dev_reach_factors.get('bu_ph_pickup', [])
+            'EF PRI PU': _padded(dev_reach_factors.get('ef_pickup'), count),
+            'EF BU PU': _padded(dev_reach_factors.get('bu_ef_pickup'), count),
+            'PH PRI PU': _padded(dev_reach_factors.get('ph_pickup'), count),
+            'PH BU PU': _padded(dev_reach_factors.get('bu_ph_pickup'), count)
         }
 
         reach_factors = {
-            'EF PRI RF': dev_reach_factors.get('ef_rf', []),
-            'EF BU RF': dev_reach_factors.get('bu_ef_rf', []),
-            'PH PRI RF': dev_reach_factors.get('ph_rf', []),
-            'PH BU RF': dev_reach_factors.get('bu_ph_rf', []),
+            'EF PRI RF': _padded(dev_reach_factors.get('ef_rf'), count),
+            'EF BU RF': _padded(dev_reach_factors.get('bu_ef_rf'), count),
+            'PH PRI RF': _padded(dev_reach_factors.get('ph_rf'), count),
+            'PH BU RF': _padded(dev_reach_factors.get('bu_ph_rf'), count),
         }
 
-        # Nps results are only included if there are nps elements in service.
+        # Nps results are only populated if there are nps elements in
+        # service. The NPS columns exist either way; a device with none
+        # in service simply leaves them blank.
         if not nps_oos(device):
-            nps_pick_ups = {
-                'NPS PRI PU': dev_reach_factors.get('nps_pickup', []),
-                'NPS BU PU': dev_reach_factors.get('bu_nps_pickup', [])
-            }
-            nps_reach_factors = {
-                'NPS EF PRI RF': dev_reach_factors.get('nps_ef_rf', []),
-                'NPS EF BU RF': dev_reach_factors.get('bu_nps_ef_rf', []),
-                'NPS PH PRI RF': dev_reach_factors.get('nps_ph_rf', []),
-                'NPS PH BU RF': dev_reach_factors.get('bu_nps_ph_rf', [])
-            }
-            pick_ups.update(nps_pick_ups)
-            reach_factors.update(nps_reach_factors)
+            pick_ups.update({
+                'NPS PRI PU': _padded(
+                    dev_reach_factors.get('nps_pickup'), count
+                ),
+                'NPS BU PU': _padded(
+                    dev_reach_factors.get('bu_nps_pickup'), count
+                ),
+            })
+            reach_factors.update({
+                'NPS EF PRI RF': _padded(
+                    dev_reach_factors.get('nps_ef_rf'), count
+                ),
+                'NPS EF BU RF': _padded(
+                    dev_reach_factors.get('bu_nps_ef_rf'), count
+                ),
+                'NPS PH PRI RF': _padded(
+                    dev_reach_factors.get('nps_ph_rf'), count
+                ),
+                'NPS PH BU RF': _padded(
+                    dev_reach_factors.get('bu_nps_ph_rf'), count
+                ),
+            })
 
         df = pd.DataFrame(fault_levels | pick_ups | reach_factors)
 
         # Sort by Max PG fault descending
         if 'Max PG fault' in df.columns and not df.empty:
             try:
-                df_sorted = df.sort_values(by='Max PG fault', ascending=False)
+                df = df.sort_values(by='Max PG fault', ascending=False)
             except (AttributeError, KeyError):
-                df_sorted = df
-        else:
-            df_sorted = df
+                pass
 
-        # Map transformer sizes
+        # Map transformer sizes. Keyed off 'Termination', which now
+        # carries the terminal names formerly held in the device-named
+        # column.
         try:
             tr_dict = {
                 str(load.term.loc_name): safe_numeric(load.load_kva)
                 for load in device.sect_loads
                 if hasattr(load, 'term') and hasattr(load, 'load_kva')
             }
-            df_sorted['Tfmr Size (kVA)'] = df_sorted[device_name].map(tr_dict)
-        except AttributeError:
+            df['Tfmr Size (kVA)'] = df['Termination'].map(tr_dict)
+        except (AttributeError, KeyError):
             pass
 
-        dfls_list.append(df_sorted)
+        df.insert(0, 'Primary Protection', device_name)
+        df.insert(0, 'Feeder', feeder_name)
 
-    return dfls_list
+        # Surface anything device_reach_factors starts returning that the
+        # schema does not know about, rather than dropping it silently.
+        unexpected = [c for c in df.columns if c not in DETAILED_COLUMNS]
+        if unexpected:
+            logger.warning(
+                "Detailed results for %s/%s produced unrecognised "
+                "columns which will not be written: %s",
+                feeder_name, device_name, unexpected
+            )
+
+        frames.append(df.reindex(columns=DETAILED_COLUMNS))
+
+    if not frames:
+        return pd.DataFrame(columns=DETAILED_COLUMNS)
+
+    return pd.concat(frames, ignore_index=True)
 
 
 # =============================================================================
@@ -680,6 +733,32 @@ def safe_numeric(value: Any) -> Any:
         return float(value) if value else None
     except (ValueError, TypeError):
         return None
+
+
+def _padded(values: Optional[List], length: int) -> List:
+    """
+    Return ``values`` resized to ``length``, padding with None.
+
+    ``device_reach_factors`` returns a list per terminal, but a missing
+    or short key would previously make ``pd.DataFrame`` raise "All
+    arrays must be of the same length" and take the whole project's
+    output with it. Padding with None keeps the row count honest: a
+    blank cell means no value was produced, which is what happened.
+
+    Args:
+        values: List from device_reach_factors, or None if absent.
+        length: Number of terminals in the device's section.
+
+    Returns:
+        List of exactly ``length`` items.
+    """
+    if not values:
+        return [None] * length
+
+    if len(values) < length:
+        return list(values) + [None] * (length - len(values))
+
+    return list(values[:length])
 
 
 def clean_string_value(value: Any) -> str:
@@ -823,7 +902,8 @@ def ensure_numeric_types(df: pd.DataFrame) -> pd.DataFrame:
         if any(
                 kw in col_str
                 for kw in [
-                    'name', 'construction', 'site', 'device', 'feeder', 'point'
+                    'name', 'construction', 'site', 'device', 'feeder',
+                    'point', 'termination', 'protection'
                 ]
         ):
             continue
@@ -936,40 +1016,40 @@ def adjust_summ_col_size(ws) -> None:
 
 
 def adjust_detailed_col_size(ws) -> None:
-    """Adjust column widths for Detailed Results sheets."""
-    ws.row_dimensions[2].height = 30.00
+    """
+    Format the flat Detailed Results table.
 
-    for cell in ws[2]:
-        cell.alignment = Alignment(wrap_text=True)
+    Bolds and wraps the single header row, freezes the header plus the
+    two identifying columns, applies an autofilter over the used range,
+    and sizes each column to its content within sensible bounds.
+    """
+    if ws.max_row < 1 or ws.max_column < 1:
+        return
 
-    device_col_letter = None
+    for cell in ws[1]:
+        cell.font = Font(bold=True)
+        cell.alignment = Alignment(wrap_text=True, vertical='bottom')
+
+    ws.row_dimensions[1].height = 30.0
+
+    # Freeze the header row and the Feeder / Primary Protection columns.
+    ws.freeze_panes = 'C2'
+
+    last_col = get_column_letter(ws.max_column)
+    ws.auto_filter.ref = f'A1:{last_col}{ws.max_row}'
 
     for col in ws.columns:
         column = col[0].column_letter
-        second_row_cell = col[1] if len(col) > 1 else None
+        max_length = 0
 
-        is_tfmr_col = (
-            second_row_cell
-            and second_row_cell.value
-            and str(second_row_cell.value) == "Tfmr Size (kVA)"
-        )
+        for cell in col:
+            try:
+                if cell.value is not None and len(str(cell.value)) > max_length:
+                    max_length = len(str(cell.value))
+            except (AttributeError, TypeError):
+                pass
 
-        if is_tfmr_col:
-            ws.column_dimensions[column].width = 13.71
-            tr_col_num = second_row_cell.column
-            device_col_letter = get_column_letter(tr_col_num + 1)
-        elif column == device_col_letter:
-            max_length = 0
-            for cell in col:
-                try:
-                    if len(str(cell.value)) > max_length:
-                        max_length = len(str(cell.value))
-                except (AttributeError, TypeError):
-                    pass
-
-            ws.column_dimensions[column].width = max_length + 2
-        else:
-            ws.column_dimensions[column].width = 15
+        ws.column_dimensions[column].width = min(max(max_length + 2, 9), 45)
 
 
 def adjust_cond_damage_col_width(ws) -> None:
