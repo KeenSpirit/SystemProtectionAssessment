@@ -7,7 +7,7 @@ Output files are saved to the user's local directory.
 
 Output Sheets:
     - General Information: Study parameters, grid data, settings
-    - Summary Results: Device fault levels, capacity, backup devices
+    - Summary Results: One row per device across all feeders
     - {Feeder} Detailed Results: Terminal-by-terminal analysis
     - {Feeder} Cond Dmg Res: Conductor damage results (if selected)
 
@@ -15,10 +15,9 @@ Functions:
     save_dataframe: Main entry point for Excel output generation
     format_grid_data: Format external grid parameters
     format_fl_results: Format fault level results per feeder
-    format_study_results: Format device summary data
-    format_fdr_open_points: Format feeder open point list
+    format_study_results: Format one feeder's device summary rows
+    format_open_points: Join a feeder's open point names
     format_detailed_results: Format terminal-level results
-    format_devices: Create device data structure template
 """
 
 from pathlib import Path
@@ -47,6 +46,39 @@ from importlib import reload
 
 reload(fault_impedance)
 reload(cd)
+
+# =============================================================================
+# SUMMARY RESULTS LAYOUT
+# =============================================================================
+
+# Column order for the flat Summary Results table. The first two columns
+# identify the row; columns 3-19 are the per-device metrics that were
+# formerly row labels in the transposed per-feeder blocks; the last column
+# carries the feeder's open points, repeated on every row of that feeder.
+# Label spacing is preserved verbatim from the previous layout so that
+# existing downstream lookups keep matching.
+SUMMARY_COLUMNS = [
+    'Feeder',
+    'Protection device',
+    'L-L Voltage (kV)',
+    'No. Phases',
+    'DS Capacity  (kVA)',
+    'Max 3Ph FL',
+    'Max 2Ph FL',
+    'Max PG FL',
+    'Min 3Ph FL',
+    'Min 2Ph FL',
+    'Min PG FL',
+    'Min SN 2P FL',
+    'Min SN PG FL',
+    'Max DS TR (Site name)',
+    'Max TR size (kVA)',
+    'TR Max Ph ',
+    'TR Max PG',
+    'Downstream Devices',
+    'Back-up Device',
+    'Feeder Open Points',
+]
 
 # =============================================================================
 # OUTPUT PATH RESOLUTION
@@ -223,36 +255,28 @@ def save_dataframe(
             project_version, oh_z, ug_z, variations
         )
 
-        # Summary Results and Detailed Results sheets
-        i = 1
+        # Summary Results sheet: every feeder's devices stacked into one
+        # table, written in a single call so the sheet is one contiguous
+        # range that post-processing can read as a table.
+        summary_frames = [key[0] for key in fault_studies_pd.values()]
+
+        if summary_frames:
+            summary_df = pd.concat(summary_frames, ignore_index=True)
+        else:
+            summary_df = pd.DataFrame(columns=SUMMARY_COLUMNS)
+
+        summary_df = clean_dataframe(summary_df)
+        summary_df = ensure_numeric_types(summary_df)
+        summary_df.to_excel(
+            writer,
+            sheet_name='Summary Results',
+            startrow=0,
+            index=False
+        )
+
+        # Detailed Results sheets
         for feeder, key in fault_studies_pd.items():
-            study_results = clean_dataframe(key[0])
-            fdr_open_points = clean_dataframe(key[1])
-            dfls_list = key[2]
-
-            # Write summary results
-            col_letter = get_column_letter(i)
-            study_results.to_excel(
-                writer,
-                sheet_name='Summary Results',
-                startrow=2,
-                startcol=i - 1,
-                index=False
-            )
-            fdr_open_points.to_excel(
-                writer,
-                sheet_name='Summary Results',
-                startrow=21,
-                startcol=i - 1,
-                index=False
-            )
-
-            sheet = workbook['Summary Results']
-            sheet[f'{col_letter}1'].font = Font(size=12, bold=True)
-            safe_set_cell(sheet, f'{col_letter}1', fix_string(str(feeder)))
-
-            study_results_len = len(study_results.columns)
-            i = i + study_results_len + 1
+            dfls_list = key[1]
 
             # Write detailed results
             safe_feeder_name = create_safe_sheet_name(
@@ -421,92 +445,121 @@ def format_fl_results(app: pft.Application, region: str, feeders: List) -> Dict:
 
     Returns:
         Dictionary mapping feeder names to lists containing:
-        [study_results_df, open_points_df, detailed_results_list]
+        [summary_df, detailed_results_list]
+
+        The per-feeder summary frames all share ``SUMMARY_COLUMNS`` and
+        are concatenated by ``save_dataframe`` into one Summary Results
+        table. Open points are carried inside the summary frame, so the
+        separate open-points frame no longer exists.
     """
     fault_studies_pd = {}
 
     for feeder in feeders:
-        study_results_df = format_study_results(app, feeder.devices)
-        fdr_open_points = format_fdr_open_points(feeder)
+        summary_df = format_study_results(feeder)
         dfls_list = format_detailed_results(app, region, feeder.devices)
 
         fault_studies_pd[feeder.obj.loc_name] = [
-            study_results_df,
-            fdr_open_points,
+            summary_df,
             dfls_list
         ]
 
     return fault_studies_pd
 
 
-def format_study_results(app: pft.Application, devices: List) -> pd.DataFrame:
+def format_study_results(feeder) -> pd.DataFrame:
     """
-    Format device summary results for the Summary Results sheet.
+    Format one feeder's device summary as rows of the flat table.
+
+    Produces one row per protection device, with the feeder name and
+    the feeder's open-point list repeated on every row so the table can
+    be looked up or filtered without reference to any other sheet.
 
     Args:
-        app: PowerFactory application instance.
-        devices: List of Device dataclasses.
+        feeder: Feeder dataclass with ``obj``, ``devices`` and
+            ``open_points`` attributes.
 
     Returns:
-        DataFrame with device fault levels, capacity, and relationships.
+        DataFrame with exactly the ``SUMMARY_COLUMNS`` columns. Numeric
+        cells that have no value are left as NaN (not ""), so that the
+        concatenated frame keeps numeric dtypes and Excel receives
+        genuinely empty cells rather than text.
     """
-    device_list = format_devices()
+    feeder_name = str(feeder.obj.loc_name)
+    open_points = format_open_points(feeder)
 
-    for device in devices:
+    rows = []
+
+    for device in feeder.devices:
         ds_names = [str(d.obj.loc_name) for d in device.ds_devices]
         us_names = [str(d.obj.loc_name) for d in device.us_devices]
-        max_ds_tr = device.max_ds_tr
 
-        device_values = [
-            safe_numeric(device.l_l_volts),
-            safe_numeric(device.phases),
-            safe_numeric(device.ds_capacity),
-            safe_numeric(device.max_fl_3ph),
-            safe_numeric(device.max_fl_2ph),
-            safe_numeric(device.max_fl_pg),
-            safe_numeric(device.min_fl_3ph),
-            safe_numeric(device.min_fl_2ph),
-            safe_numeric(device.min_fl_pg),
-            safe_numeric(device.min_sn_fl_2ph),
-            safe_numeric(device.min_sn_fl_pg),
-            (
-                str(max_ds_tr.term.cpSubstat.loc_name)
-                if max_ds_tr.term is not None
-                else ''
-            ),
-            safe_numeric(max_ds_tr.load_kva),
-            safe_numeric(max_ds_tr.max_ph),
-            safe_numeric(max_ds_tr.max_pg),
-            ', '.join(ds_names),
-            ', '.join(us_names),
-        ]
+        # max_ds_tr may be absent, or present with no terminal resolved.
+        # Both are reported as blanks rather than crashing the run.
+        max_ds_tr = getattr(device, 'max_ds_tr', None)
+        tr_site = ''
+        tr_kva = None
+        tr_max_ph = None
+        tr_max_pg = None
 
-        device_list[str(device.obj.loc_name)] = device_values
+        if max_ds_tr is not None:
+            if getattr(max_ds_tr, 'term', None) is not None:
+                tr_site = str(max_ds_tr.term.cpSubstat.loc_name)
+            tr_kva = safe_numeric(getattr(max_ds_tr, 'load_kva', None))
+            tr_max_ph = safe_numeric(getattr(max_ds_tr, 'max_ph', None))
+            tr_max_pg = safe_numeric(getattr(max_ds_tr, 'max_pg', None))
 
-    formatted_dev_pd = pd.DataFrame.from_dict(device_list)
-    study_results_df = formatted_dev_pd.fillna("")
+        rows.append({
+            'Feeder': feeder_name,
+            'Protection device': str(device.obj.loc_name),
+            'L-L Voltage (kV)': safe_numeric(device.l_l_volts),
+            'No. Phases': safe_numeric(device.phases),
+            'DS Capacity  (kVA)': safe_numeric(device.ds_capacity),
+            'Max 3Ph FL': safe_numeric(device.max_fl_3ph),
+            'Max 2Ph FL': safe_numeric(device.max_fl_2ph),
+            'Max PG FL': safe_numeric(device.max_fl_pg),
+            'Min 3Ph FL': safe_numeric(device.min_fl_3ph),
+            'Min 2Ph FL': safe_numeric(device.min_fl_2ph),
+            'Min PG FL': safe_numeric(device.min_fl_pg),
+            'Min SN 2P FL': safe_numeric(device.min_sn_fl_2ph),
+            'Min SN PG FL': safe_numeric(device.min_sn_fl_pg),
+            'Max DS TR (Site name)': tr_site,
+            'Max TR size (kVA)': tr_kva,
+            'TR Max Ph ': tr_max_ph,
+            'TR Max PG': tr_max_pg,
+            'Downstream Devices': ', '.join(ds_names),
+            'Back-up Device': ', '.join(us_names),
+            'Feeder Open Points': open_points,
+        })
 
-    return study_results_df
+    if not rows:
+        # A feeder with no protection devices contributes no device rows.
+        # Emit a single identifying row so the feeder — and its open
+        # points — are not silently dropped from the table.
+        rows.append({
+            'Feeder': feeder_name,
+            'Protection device': '',
+            'Feeder Open Points': open_points,
+        })
+
+    return pd.DataFrame(rows, columns=SUMMARY_COLUMNS)
 
 
-def format_fdr_open_points(feeder) -> pd.DataFrame:
+def format_open_points(feeder) -> str:
     """
-    Format feeder open points for output.
+    Format a feeder's open points as a single comma-separated string.
+
+    The flat Summary Results table has one row per device, so the open
+    points can no longer occupy their own column of names; they are
+    collapsed into one cell and repeated on each of the feeder's rows.
 
     Args:
-        feeder: Feeder dataclass with open_points attribute.
+        feeder: Feeder dataclass with an ``open_points`` attribute.
 
     Returns:
-        DataFrame with single column listing open point names.
+        Comma-separated open point names, or '' if there are none.
     """
-    open_points = feeder.open_points
-    safe_open_points = [str(op.loc_name) for op in open_points]
-
-    fdr_open_points = {'Feeder Open Points': safe_open_points}
-    formatted_df = pd.DataFrame.from_dict(fdr_open_points)
-    formatted_df = formatted_df.fillna("")
-
-    return formatted_df
+    open_points = getattr(feeder, 'open_points', None) or []
+    return ', '.join(str(op.loc_name) for op in open_points)
 
 
 def format_detailed_results(
@@ -605,37 +658,6 @@ def format_detailed_results(
         dfls_list.append(df_sorted)
 
     return dfls_list
-
-
-def format_devices() -> Dict[str, List]:
-    """
-    Create the device data structure template for Summary Results.
-
-    Returns:
-        Dictionary with 'Site Name' key containing row labels.
-    """
-    device_list = {
-        'Site Name': [
-            'L-L Voltage (kV)',
-            'No. Phases',
-            'DS Capacity  (kVA)',
-            'Max 3Ph FL',
-            'Max 2Ph FL',
-            'Max PG FL',
-            'Min 3Ph FL',
-            'Min 2Ph FL',
-            'Min PG FL',
-            'Min SN 2P FL',
-            'Min SN PG FL',
-            'Max DS TR (Site name)',
-            'Max TR size (kVA)',
-            'TR Max Ph ',
-            'TR Max PG',
-            'Downstream Devices',
-            'Back-up Device'
-        ]
-    }
-    return device_list
 
 
 # =============================================================================
@@ -798,7 +820,12 @@ def ensure_numeric_types(df: pd.DataFrame) -> pd.DataFrame:
         col_str = str(col).lower()
 
         # Skip string columns
-        if any(kw in col_str for kw in ['name', 'construction', 'site', 'device']):
+        if any(
+                kw in col_str
+                for kw in [
+                    'name', 'construction', 'site', 'device', 'feeder', 'point'
+                ]
+        ):
             continue
 
         # Attempt numeric conversion; leave the column untouched if it
@@ -869,30 +896,43 @@ def adjust_gen_info_col_size(ws) -> None:
 
 
 def adjust_summ_col_size(ws) -> None:
-    """Adjust column widths for Summary Results sheet."""
+    """
+    Format the flat Summary Results table.
+
+    Bolds and wraps the single header row, freezes the header plus the
+    two identifying columns, applies an autofilter over the used range,
+    and sizes each column to its content within sensible bounds.
+    """
+    if ws.max_row < 1 or ws.max_column < 1:
+        return
+
+    for cell in ws[1]:
+        cell.font = Font(bold=True)
+        cell.alignment = Alignment(wrap_text=True, vertical='bottom')
+
+    ws.row_dimensions[1].height = 30.0
+
+    # Freeze the header row and the Feeder / Protection device columns.
+    ws.freeze_panes = 'C2'
+
+    last_col = get_column_letter(ws.max_column)
+    ws.auto_filter.ref = f'A1:{last_col}{ws.max_row}'
+
     for col in ws.columns:
-        max_length = 0
         column = col[0].column_letter
+        max_length = 0
 
-        second_row_cell = col[1] if len(col) > 1 else None
-        is_tfmr_col = (
-            second_row_cell
-            and second_row_cell.value
-            and str(second_row_cell.value) == "Tfmr Size (kVA)"
-        )
+        for cell in col:
+            try:
+                if cell.value is not None and len(str(cell.value)) > max_length:
+                    max_length = len(str(cell.value))
+            except (AttributeError, TypeError):
+                pass
 
-        if is_tfmr_col:
-            ws.column_dimensions[column].width = 13.71
-        else:
-            for cell in col:
-                try:
-                    if len(str(cell.value)) > max_length:
-                        max_length = len(str(cell.value))
-                except (AttributeError, TypeError):
-                    pass
-
-            adjusted_width = max_length + 2
-            ws.column_dimensions[column].width = adjusted_width
+        # Clamp so the open-points and downstream-device columns, which
+        # can hold very long joined lists, do not push the table off
+        # screen.
+        ws.column_dimensions[column].width = min(max(max_length + 2, 9), 70)
 
 
 def adjust_detailed_col_size(ws) -> None:
