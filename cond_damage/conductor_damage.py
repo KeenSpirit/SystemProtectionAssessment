@@ -38,7 +38,7 @@ logger = logging.getLogger(__name__)
 # min fault level and max fault level.
 # INTERVAL = "partial": composed of only the element hisets between
 # min fault level and max fault level.
-INTERVAL = "full"
+INTERVAL = "partial"
 # When INTERVAL = "full", fault_clear_times evaluates clearing time
 # at each fault level from line minimum to maximum in steps of size
 # FL_STEP_AMPS; the step that yields the greatest I2t is reported.
