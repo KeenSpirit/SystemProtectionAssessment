@@ -165,10 +165,9 @@ def set_enabled_elements(
     # Get block logic configuration from recloser type
     logic = recloser.GetAttribute("ilogic")
     recloser_type = recloser.GetAttribute("typ_id")
-    type_block_id = recloser_type.GetAttribute("blockid")
-
-    if type_block_id is None:
+    if recloser_type is None:
         return None
+    type_block_id = recloser_type.GetAttribute("blockid")
 
     # Map relay elements to their block logic
     net_elements = device.GetAttribute("pdiselm")
