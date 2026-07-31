@@ -125,8 +125,6 @@ def get_prot_elements(
         >>> print(f"Found {len(elements['ef_idmt_elements'])} EF IDMT elements")
     """
 
-    #TODO: Cover no type id case. Return what?
-
     # Get all IDMT elements that are in service
     idmt_elements = [
         idmt_element
