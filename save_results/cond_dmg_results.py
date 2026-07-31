@@ -8,7 +8,7 @@ trips in the auto-reclose sequence) against the conductor's thermal
 withstand energy, derived from its 1-second thermal rating.
 
 Functions:
-    cond_damage_results: Format conductor damage data as DataFrame
+    cond_damage_results: Format one feeder's conductor damage rows
 """
 
 from typing import List, Optional
@@ -18,30 +18,61 @@ import pandas as pd
 from relays import reclose
 
 
-def cond_damage_results(devices: List) -> pd.DataFrame:
-    """
-    Format conductor damage assessment results for Excel export.
+# Column order for the flat Cond Dmg Results table. 'Feeder' identifies
+# the row; the remaining columns are unchanged from the per-feeder
+# sheets this replaces.
+COND_DAMAGE_COLUMNS = [
+    'Feeder',
+    'Device',
+    'Trips',
+    'Line',
+    'Line Type',
+    'Worst case energy ph flt lvl',
+    'Worst case energy ph flt clear time',
+    'Total ph energy',
+    'Allowable energy',
+    'Phase fault conductor damage',
+    'Worst case energy gnd flt lvl',
+    'Worst case energy gnd flt clear time',
+    'Total gnd energy',
+    'Ground fault conductor damage',
+]
 
-    Creates a DataFrame containing conductor damage evaluation for all
-    line sections protected by each device. Includes fault levels,
-    clearing times, allowable limits, and pass/fail status.
+
+def cond_damage_results(feeder) -> pd.DataFrame:
+    """
+    Format one feeder's conductor damage results as rows of the flat
+    table.
+
+    Produces one row per line section per device, with the feeder name
+    repeated on every row so that all feeders stack into a single
+    table.
 
     Args:
-        devices: List of Device dataclasses with populated sect_lines.
+        feeder: Feeder dataclass with ``obj`` and ``devices``, each
+            device having populated sect_lines.
 
     Returns:
-        DataFrame with columns:
+        DataFrame with exactly the ``COND_DAMAGE_COLUMNS`` columns:
+        - Feeder: Feeder name
         - Device: Protection device name
         - Trips: Number of trips in auto-reclose sequence
         - Line: Line section name
-        - Line Type: Construction type string
-        - Worst case energy ph flt lvl: Maximum phase fault current (A)
-        - Worst case energy ph flt clear time: Phase clearing time (s)
-        - Allowable phase fault level: Thermal limit for phase (A)
+        - Line Type: Conductor type description
+        - Worst case energy ph flt lvl: Phase fault current of the trip
+          contributing the most energy (A)
+        - Worst case energy ph flt clear time: Clearing time of that
+          trip (s)
+        - Total ph energy: Phase I2t accumulated across all trips (A2s)
+        - Allowable energy: Conductor thermal withstand energy (A2s),
+          or blank where the thermal rating is missing
         - Phase fault conductor damage: PASS/FAIL/NO DATA/SWER
-        - Worst case energy gnd flt lvl: Maximum ground fault current (A)
-        - Worst case energy gnd flt clear time: Ground clearing time (s)
-        - Allowable ground fault level: Thermal limit for ground (A)
+        - Worst case energy gnd flt lvl: Ground fault current of the
+          trip contributing the most energy (A)
+        - Worst case energy gnd flt clear time: Clearing time of that
+          trip (s)
+        - Total gnd energy: Ground I2t accumulated across all trips
+          (A2s)
         - Ground fault conductor damage: PASS/FAIL/NO DATA/SWER
 
     Note:
@@ -49,16 +80,18 @@ def cond_damage_results(devices: List) -> pd.DataFrame:
         faults are not applicable to single-wire earth return systems.
 
     Example:
-        >>> df = cond_damage_results(feeder.devices)
-        >>> df.to_excel(writer, sheet_name='Conductor Damage')
+        >>> df = cond_damage_results(feeder)
+        >>> df.to_excel(writer, sheet_name='Cond Dmg Results')
     """
+    feeder_name = str(feeder.obj.loc_name)
     line_list = []
 
-    for device in devices:
+    for device in feeder.devices:
         trips = reclose.get_device_trips(device.obj)
         list_length = len(device.sect_lines)
 
         line_df = pd.DataFrame({
+            "Feeder": [feeder_name] * list_length,
             "Device": [device.obj.loc_name] * list_length,
             "Trips": trips,
             "Line": [line.obj.loc_name for line in device.sect_lines],
@@ -96,8 +129,11 @@ def cond_damage_results(devices: List) -> pd.DataFrame:
         })
         line_list.append(line_df)
 
-    cond_damage_df = pd.concat(line_list)
-    return cond_damage_df
+        if not line_list:
+            return pd.DataFrame(columns=COND_DAMAGE_COLUMNS)
+
+        cond_damage_df = pd.concat(line_list, ignore_index=True)
+        return cond_damage_df.reindex(columns=COND_DAMAGE_COLUMNS)
 
 
 def _allowable_energy(thermal_rating) -> Optional[float]:

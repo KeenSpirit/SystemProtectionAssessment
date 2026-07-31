@@ -9,7 +9,7 @@ Output Sheets:
     - General Information: Study parameters, grid data, settings
     - Summary Results: One row per device across all feeders
     - Detailed Results: One row per terminal across all devices
-    - {Feeder} Cond Dmg Res: Conductor damage results (if selected)
+    - Cond Dmg Results: One row per line section (if selected)
 
 Functions:
     save_dataframe: Main entry point for Excel output generation
@@ -341,25 +341,31 @@ def save_dataframe(
             index=False
         )
 
-        # Conductor Damage Results: still one sheet per feeder.
+        # Cond Dmg Results sheet: every line section on every feeder
+        # stacked into one table.
         if 'Conductor Damage Assessment' in study_selections:
-            for feeder in fault_studies_pd:
-                devices = [
-                    fdr.devices
-                    for fdr in feeders
-                    if fdr.obj.loc_name == feeder
-                ][0]
-                cond_damage_df = cd.cond_damage_results(devices)
-                cond_damage_df = clean_dataframe(cond_damage_df)
-                cond_damage_df = ensure_numeric_types(cond_damage_df)
-
-                sheet_name = create_safe_sheet_name(f"{feeder} Cond Dmg Res")
-                cond_damage_df.to_excel(
-                    writer,
-                    sheet_name=sheet_name,
-                    startrow=0,
-                    index=False
+            cond_frames = [
+                frame for frame in (
+                    cd.cond_damage_results(fdr) for fdr in feeders
                 )
+                if not frame.empty
+            ]
+
+            if cond_frames:
+                cond_damage_df = pd.concat(cond_frames, ignore_index=True)
+            else:
+                cond_damage_df = pd.DataFrame(
+                    columns=cd.COND_DAMAGE_COLUMNS
+                )
+
+            cond_damage_df = clean_dataframe(cond_damage_df)
+            cond_damage_df = ensure_numeric_types(cond_damage_df)
+            cond_damage_df.to_excel(
+                writer,
+                sheet_name='Cond Dmg Results',
+                startrow=0,
+                index=False
+            )
 
     # Apply formatting
     wb = load_workbook(filepath)
@@ -372,12 +378,9 @@ def save_dataframe(
     ws = wb['Detailed Results']
     adjust_detailed_col_size(ws)
 
-    if 'Conductor Damage Assessment' in study_selections:
-        for feeder in fault_studies_pd:
-            sheet_name = create_safe_sheet_name(f"{feeder} Cond Dmg Res")
-            if sheet_name in wb.sheetnames:
-                ws = wb[sheet_name]
-                adjust_cond_damage_col_width(ws)
+    if 'Cond Dmg Results' in wb.sheetnames:
+        ws = wb['Cond Dmg Results']
+        adjust_cond_damage_col_width(ws)
 
     wb.save(filepath)
     logger.info(f"Output file saved to {filepath}")
@@ -1069,34 +1072,40 @@ def adjust_detailed_col_size(ws) -> None:
 
 
 def adjust_cond_damage_col_width(ws) -> None:
-    """Adjust column widths for Conductor Damage Results sheets."""
-    ws.row_dimensions[1].height = 30.00
+    """
+    Format the flat Cond Dmg Results table.
 
-    wrap_alignment = Alignment(wrap_text=True)
+    Bolds and wraps the single header row, freezes the header plus the
+    two identifying columns, applies an autofilter over the used range,
+    and sizes each column to its content within sensible bounds.
+    """
+    if ws.max_row < 1 or ws.max_column < 1:
+        return
+
     for cell in ws[1]:
-        cell.alignment = wrap_alignment
+        cell.font = Font(bold=True)
+        cell.alignment = Alignment(wrap_text=True, vertical='bottom')
 
-    fixed_widths = {
-        'E': 13.86, 'F': 17.14, 'G': 14.71, 'H': 16.43,
-        'I': 13.57, 'J': 17.14, 'K': 15.71, 'L': 16.29
-    }
+    ws.row_dimensions[1].height = 30.0
+
+    # Freeze the header row and the Feeder / Device columns.
+    ws.freeze_panes = 'C2'
+
+    last_col = get_column_letter(ws.max_column)
+    ws.auto_filter.ref = f'A1:{last_col}{ws.max_row}'
 
     for col in ws.columns:
-        column_letter = col[0].column_letter
+        column = col[0].column_letter
+        max_length = 0
 
-        if column_letter in ['A', 'B', 'C', 'D']:
-            max_length = 0
-            for cell in col:
-                try:
-                    if len(str(cell.value)) > max_length:
-                        max_length = len(str(cell.value))
-                except (AttributeError, TypeError):
-                    pass
+        for cell in col:
+            try:
+                if cell.value is not None and len(str(cell.value)) > max_length:
+                    max_length = len(str(cell.value))
+            except (AttributeError, TypeError):
+                pass
 
-            ws.column_dimensions[column_letter].width = max_length + 2
-
-        elif column_letter in fixed_widths:
-            ws.column_dimensions[column_letter].width = fixed_widths[column_letter]
+        ws.column_dimensions[column].width = min(max(max_length + 2, 9), 45)
 
 
 def nps_oos(device: ast.Device) -> bool:
