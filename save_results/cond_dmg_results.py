@@ -11,7 +11,7 @@ Functions:
     cond_damage_results: Format one feeder's conductor damage rows
 """
 
-from typing import List, Optional
+from typing import Optional
 
 import pandas as pd
 
@@ -129,11 +129,11 @@ def cond_damage_results(feeder) -> pd.DataFrame:
         })
         line_list.append(line_df)
 
-        if not line_list:
-            return pd.DataFrame(columns=COND_DAMAGE_COLUMNS)
+    if not line_list:
+        return pd.DataFrame(columns=COND_DAMAGE_COLUMNS)
 
-        cond_damage_df = pd.concat(line_list, ignore_index=True)
-        return cond_damage_df.reindex(columns=COND_DAMAGE_COLUMNS)
+    cond_damage_df = pd.concat(line_list, ignore_index=True)
+    return cond_damage_df.reindex(columns=COND_DAMAGE_COLUMNS)
 
 
 def _allowable_energy(thermal_rating) -> Optional[float]:
