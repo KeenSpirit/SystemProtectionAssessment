@@ -633,14 +633,17 @@ def _calculate_hermite_toc_time(
     number_of_rows = len(curve_var)
     curve_count = curve_char.GetAttribute("e:i_curves")
 
-    if curve_count > 1:
-        return None
+    curve_col = 1
+    for index, value in enumerate(range(1, curve_count+1)):
+        if time_dial == [0][value]:
+            curve_col = value
+            break
 
     if i_ip < curve_var[0][0]:
         return None
 
     if i_ip > curve_var[number_of_rows - 1][0]:
-        return curve_var[number_of_rows - 1][1]
+        return curve_var[number_of_rows - 1][curve_col]
 
     # Linear interpolation
     k = 0
@@ -650,7 +653,7 @@ def _calculate_hermite_toc_time(
                 (i_ip - curve_var[k][0])
                 / (curve_var[k + 1][0] - curve_var[k][0])
             )
-            y_diff = curve_var[k][1] - curve_var[k + 1][1]
+            y_diff = curve_var[k][1] - curve_var[k + 1][curve_col]
             return (curve_var[k][1] - y_diff * x_ratio) * time_dial
         k += 1
 
