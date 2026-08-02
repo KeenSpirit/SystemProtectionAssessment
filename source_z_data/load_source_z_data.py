@@ -58,7 +58,7 @@ SOURCE_Z_DIR_NAME = "data"
 
 # Preferred file names
 REGIONAL_WORKBOOK = "grid_results_ee"
-REGIONAL_WORKBOOK_GLOB = "*Fault Level Report*.xlsx"
+REGIONAL_WORKBOOK_GLOB = "grid_results_ee*.xlsx"
 SEQ_WORKBOOK = "grid_results_egx.xlsx"
 SEQ_WORKBOOK_GLOB = "grid_results_egx*.xlsx"
 

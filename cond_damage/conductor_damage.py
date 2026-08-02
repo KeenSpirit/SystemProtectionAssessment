@@ -635,7 +635,7 @@ def _calculate_hermite_toc_time(
 
     curve_col = 1
     for index, value in enumerate(range(1, curve_count+1)):
-        if time_dial == [0][value]:
+        if time_dial == curve_var[0][value]:
             curve_col = value
             break
 
@@ -653,8 +653,8 @@ def _calculate_hermite_toc_time(
                 (i_ip - curve_var[k][0])
                 / (curve_var[k + 1][0] - curve_var[k][0])
             )
-            y_diff = curve_var[k][1] - curve_var[k + 1][curve_col]
-            return (curve_var[k][1] - y_diff * x_ratio) * time_dial
+            y_diff = curve_var[k][curve_col] - curve_var[k + 1][curve_col]
+            return (curve_var[k][curve_col] - y_diff * x_ratio) * time_dial
         k += 1
 
     return None
