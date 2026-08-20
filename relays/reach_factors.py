@@ -323,6 +323,9 @@ def _calculate_ef_reach_factors(
     if effective_ef_pickup <= 0:
         return ['NA'] * len(elements)
 
+    device_min_2ph = None
+    device_min_pg = None
+
     ef_rf = []
     for element in elements:
         # Get appropriate fault level based on element type
@@ -346,11 +349,25 @@ def _calculate_ef_reach_factors(
         # Calculate reach factor
         if device_fl != element_fl_pg:
             # SWER case - device sees 2-phase equivalent
+            if device_min_2ph is None or device_fl < device_min_2ph:
+                device_min_2ph = device_fl
             rf = _safe_ratio(device_fl, ph_pickup)
         else:
+            if device_min_pg is None or device_fl < device_min_pg:
+                device_min_pg = device_fl
             rf = _safe_ratio(device_fl, effective_ef_pickup)
 
         ef_rf.append(rf)
+
+    # Update minimum phase and earth fault currents actually seen by the relay
+    if device_min_2ph is not None and device_min_2ph < device.min_fl_2ph:
+        device.min_device_2ph = device_min_2ph
+    else:
+        device.min_device_2ph = device.min_fl_2ph
+    if device_min_pg is not None:
+        device.min_device_pg = device_min_pg
+    else:
+        device.min_device_pg = device.min_fl_pg
 
     return ef_rf
 

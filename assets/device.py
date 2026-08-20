@@ -84,6 +84,14 @@ class Device:
     min_sn_fl_2ph: Optional[float] = None
     min_sn_fl_pg: Optional[float] = None
 
+    # Coordination parameters
+    min_device_2ph: Optional[float] = None
+    min_device_pg: Optional[float] = None
+    ph_coord_fl: Optional[float] = None
+    ph_coord_margin: Optional[float] = None
+    pg_coord_fl: Optional[float] = None
+    pg_coord_margin: Optional[float] = None
+
     # Topology - populated by network tracing
     sect_terms: List[Any] = field(default_factory=list)
     sect_loads: List[Any] = field(default_factory=list)

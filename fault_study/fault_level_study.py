@@ -670,6 +670,8 @@ def update_device_data(region: str, devices: List[ast.Device]) -> None:
         device.max_ds_tr = max_ds_tr
 
         # Calculate device fault current summaries
+        # TODO: The minimum fault current in a device's protection section is not necessarily
+        #  the same as the minimum fault current seen by the device, due to SWER transform
         device.max_fl_3ph = _safe_max(
             [term.max_fl_3ph for term in device.sect_terms]
         )

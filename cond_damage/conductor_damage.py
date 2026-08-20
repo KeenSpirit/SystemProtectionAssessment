@@ -328,8 +328,8 @@ def swer_fault_range(
         - Fault type ('2-Phase' if transformed, original otherwise)
     """
 
-    min_fl = line.min_fl_2ph
-    max_fl = _max_phase_fl(line)
+    min_fl = line.min_fl_pg
+    max_fl = line.max_fl_pg
 
     line_type = line.obj.typ_id
 
