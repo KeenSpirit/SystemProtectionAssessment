@@ -61,62 +61,71 @@ def prot_coordination(app: pft.Application, devices: List):
             pg_fl_interval = range(
                 int(device.min_device_pg), int(device.max_fl_pg) + 1, fl_step)
 
-        # Backup candidates are independent of both the fault level and
-        # the primary device's reclose trip (set_enabled_elements only
-        # touches dev_obj's own elements), so resolve them once per
-        # device rather than per fault level. Backup elements are read
-        # in the model's current service state; if per-trip backup
-        # reclose configuration is added later, build these lists after
-        # that configuration is applied.
-        bu_ph_candidates = []
-        bu_pg_candidates = []
+        # Eligible backups: same-cubicle devices are not backups, and a
+        # device is never its own backup. Duplicate references to the
+        # same PF object are dropped so the service-status capture below
+        # cannot record an already-modified state as the original.
+        eligible_bu_devices = []
+        seen_bu_objs = set()
         for bu_device in device.us_devices:
-            # If the bu_device is in the same cubicle, ignore it
             if bu_device.cubicle == device.cubicle:
                 continue
-            if not skip_ph_coord:
-                bu_ph_candidates.append(
-                    (bu_device, get_active_elements(bu_device, '2-Phase'))
-                )
-            if not skip_pg_coord:
-                # Check whether the device is SWER. If so, BU device
-                # trip time must consider the FL seen by the bu device.
-                swer = swer_check(device, bu_device)
-                bu_fault_type = '2-Phase' if swer else 'Phase-Ground'
-                bu_pg_candidates.append(
-                    (bu_device, swer, bu_fault_type,
-                     get_active_elements(bu_device, bu_fault_type))
+            bu_obj = bu_device.obj
+            if bu_obj is dev_obj or bu_obj in seen_bu_objs:
+                continue
+            seen_bu_objs.add(bu_obj)
+            eligible_bu_devices.append(bu_device)
+
+        bu_block_status = []
+        try:
+            # Assess each backup at its first-trip configuration - the
+            # fastest state it can be in, and so the conservative basis
+            # for a grading margin. This must precede the candidate
+            # retrieval below, because get_prot_elements filters on
+            # IsOutOfService at retrieval time. Fuses and relays without
+            # a recloser return None from set_enabled_elements;
+            # reset_block_service_status ignores None.
+            for bu_device in eligible_bu_devices:
+                reclose.reset_reclosing(bu_device.obj)
+                bu_block_status.append(
+                    reclose.set_enabled_elements(bu_device.obj)
                 )
 
-        while trip_count <= total_trips:
-            block_service_status = reclose.set_enabled_elements(dev_obj)
-            try:
+            # Backup candidates are independent of both the fault level
+            # and the primary device's reclose trip (set_enabled_elements
+            # touches only that device's own pdiselm elements), so
+            # resolve them once per device rather than per fault level.
+            bu_ph_candidates = []
+            bu_pg_candidates = []
+            for bu_device in eligible_bu_devices:
                 if not skip_ph_coord:
-                    fault_type = '2-Phase'
-                    # Select only the elements capable of detecting the fault type
-                    # and enabled for the current auto-reclose iteration
-                    active_elements = get_active_elements(device, fault_type)
+                    bu_ph_candidates.append(
+                        (bu_device, get_active_elements(bu_device, '2-Phase'))
+                    )
+                if not skip_pg_coord:
+                    # Check whether the device is SWER. If so, BU device
+                    # trip time must consider the FL seen by the bu device.
+                    swer = swer_check(device, bu_device)
+                    bu_fault_type = '2-Phase' if swer else 'Phase-Ground'
+                    bu_pg_candidates.append(
+                        (bu_device, swer, bu_fault_type,
+                         get_active_elements(bu_device, bu_fault_type))
+                    )
 
-                    dev_fl_trip_register = {}
-                    bu_fl_trip_register = {}
-                    for fl in ph_fl_interval:
-                        dev_fl_trip_register[fl] = None
-                        for element in active_elements:
-                            # Calculate protection operate time for element and fl
-                            if element.GetClassName() == ElementType.FUSE.value:
-                                operate_time = trip_time.fuse_clear_time(element, fl)
-                            else:
-                                element_current = current_conversion.get_measured_current(
-                                    element, fl, fault_type)
-                                operate_time = trip_time.element_trip_time(element, element_current)
-                            if not operate_time or operate_time <= 0:
-                                continue
-                            if dev_fl_trip_register[fl] is None or operate_time < dev_fl_trip_register[fl]:
-                                dev_fl_trip_register[fl] = operate_time
+            while trip_count <= total_trips:
+                block_service_status = reclose.set_enabled_elements(dev_obj)
+                try:
+                    if not skip_ph_coord:
+                        fault_type = '2-Phase'
+                        # Select only the elements capable of detecting the fault type
+                        # and enabled for the current auto-reclose iteration
+                        active_elements = get_active_elements(device, fault_type)
 
-                        bu_fl_trip_register[fl] = None
-                        for bu_device, bu_active_elements in bu_ph_candidates:
-                            for element in bu_active_elements:
+                        dev_fl_trip_register = {}
+                        bu_fl_trip_register = {}
+                        for fl in ph_fl_interval:
+                            dev_fl_trip_register[fl] = None
+                            for element in active_elements:
                                 # Calculate protection operate time for element and fl
                                 if element.GetClassName() == ElementType.FUSE.value:
                                     operate_time = trip_time.fuse_clear_time(element, fl)
@@ -126,71 +135,92 @@ def prot_coordination(app: pft.Application, devices: List):
                                     operate_time = trip_time.element_trip_time(element, element_current)
                                 if not operate_time or operate_time <= 0:
                                     continue
-                                if bu_fl_trip_register[fl] is None or operate_time < bu_fl_trip_register[fl]:
-                                    bu_fl_trip_register[fl] = operate_time
+                                if dev_fl_trip_register[fl] is None or operate_time < dev_fl_trip_register[fl]:
+                                    dev_fl_trip_register[fl] = operate_time
 
-                    for fl, dev_time in dev_fl_trip_register.items():
-                        bu_time = bu_fl_trip_register.get(fl)
-                        if dev_time is None or bu_time is None:
-                            continue
-                        coord_margin = bu_time - dev_time
-                        if worst_ph_coord_margin is None or coord_margin < worst_ph_coord_margin:
-                            worst_ph_coord_fl = fl
-                            worst_ph_coord_margin = coord_margin
-                if not skip_pg_coord:
-                    fault_type = 'Phase-Ground'
-                    # Select only the elements capable of detecting the fault type
-                    # and enabled for the current auto-reclose iteration
-                    active_elements = get_active_elements(device, fault_type)
+                            bu_fl_trip_register[fl] = None
+                            for bu_device, bu_active_elements in bu_ph_candidates:
+                                for element in bu_active_elements:
+                                    # Calculate protection operate time for element and fl
+                                    if element.GetClassName() == ElementType.FUSE.value:
+                                        operate_time = trip_time.fuse_clear_time(element, fl)
+                                    else:
+                                        element_current = current_conversion.get_measured_current(
+                                            element, fl, fault_type)
+                                        operate_time = trip_time.element_trip_time(element, element_current)
+                                    if not operate_time or operate_time <= 0:
+                                        continue
+                                    if bu_fl_trip_register[fl] is None or operate_time < bu_fl_trip_register[fl]:
+                                        bu_fl_trip_register[fl] = operate_time
 
-                    dev_fl_trip_register = {}
-                    bu_fl_trip_register = {}
-                    for fl in pg_fl_interval:
-                        dev_fl_trip_register[fl] = None
-                        for element in active_elements:
-                            # Calculate protection operate time for element and fl
-                            if element.GetClassName() == ElementType.FUSE.value:
-                                operate_time = trip_time.fuse_clear_time(element, fl)
-                            else:
-                                element_current = current_conversion.get_measured_current(
-                                    element, fl, fault_type)
-                                operate_time = trip_time.element_trip_time(element, element_current)
-                            if not operate_time or operate_time <= 0:
+                        for fl, dev_time in dev_fl_trip_register.items():
+                            bu_time = bu_fl_trip_register.get(fl)
+                            if dev_time is None or bu_time is None:
                                 continue
-                            if dev_fl_trip_register[fl] is None or operate_time < dev_fl_trip_register[fl]:
-                                dev_fl_trip_register[fl] = operate_time
+                            coord_margin = bu_time - dev_time
+                            if worst_ph_coord_margin is None or coord_margin < worst_ph_coord_margin:
+                                worst_ph_coord_fl = fl
+                                worst_ph_coord_margin = coord_margin
+                    if not skip_pg_coord:
+                        fault_type = 'Phase-Ground'
+                        # Select only the elements capable of detecting the fault type
+                        # and enabled for the current auto-reclose iteration
+                        active_elements = get_active_elements(device, fault_type)
 
-                        bu_fl_trip_register[fl] = None
-                        for (bu_device, swer, bu_fault_type,
-                             bu_active_elements) in bu_pg_candidates:
-                            bu_fault_level = (
-                                swer_transform(device, bu_device, fl)
-                                if swer else fl
-                            )
-                            for element in bu_active_elements:
+                        dev_fl_trip_register = {}
+                        bu_fl_trip_register = {}
+                        for fl in pg_fl_interval:
+                            dev_fl_trip_register[fl] = None
+                            for element in active_elements:
                                 # Calculate protection operate time for element and fl
                                 if element.GetClassName() == ElementType.FUSE.value:
-                                    operate_time = trip_time.fuse_clear_time(element, bu_fault_level)
+                                    operate_time = trip_time.fuse_clear_time(element, fl)
                                 else:
                                     element_current = current_conversion.get_measured_current(
-                                        element, bu_fault_level, bu_fault_type)
+                                        element, fl, fault_type)
                                     operate_time = trip_time.element_trip_time(element, element_current)
                                 if not operate_time or operate_time <= 0:
                                     continue
-                                if bu_fl_trip_register[fl] is None or operate_time < bu_fl_trip_register[fl]:
-                                    bu_fl_trip_register[fl] = operate_time
+                                if dev_fl_trip_register[fl] is None or operate_time < dev_fl_trip_register[fl]:
+                                    dev_fl_trip_register[fl] = operate_time
 
-                    for fl, dev_time in dev_fl_trip_register.items():
-                        bu_time = bu_fl_trip_register.get(fl)
-                        if dev_time is None or bu_time is None:
-                            continue
-                        coord_margin = bu_time - dev_time
-                        if worst_pg_coord_margin is None or coord_margin < worst_pg_coord_margin:
-                            worst_pg_coord_fl = fl
-                            worst_pg_coord_margin = coord_margin
-            finally:
-                reclose.reset_block_service_status(block_service_status)
-            trip_count = reclose.trip_count(dev_obj, increment=True)
+                            bu_fl_trip_register[fl] = None
+                            for (bu_device, swer, bu_fault_type,
+                                 bu_active_elements) in bu_pg_candidates:
+                                bu_fault_level = (
+                                    swer_transform(device, bu_device, fl)
+                                    if swer else fl
+                                )
+                                for element in bu_active_elements:
+                                    # Calculate protection operate time for element and fl
+                                    if element.GetClassName() == ElementType.FUSE.value:
+                                        operate_time = trip_time.fuse_clear_time(element, bu_fault_level)
+                                    else:
+                                        element_current = current_conversion.get_measured_current(
+                                            element, bu_fault_level, bu_fault_type)
+                                        operate_time = trip_time.element_trip_time(element, element_current)
+                                    if not operate_time or operate_time <= 0:
+                                        continue
+                                    if bu_fl_trip_register[fl] is None or operate_time < bu_fl_trip_register[fl]:
+                                        bu_fl_trip_register[fl] = operate_time
+
+                        for fl, dev_time in dev_fl_trip_register.items():
+                            bu_time = bu_fl_trip_register.get(fl)
+                            if dev_time is None or bu_time is None:
+                                continue
+                            coord_margin = bu_time - dev_time
+                            if worst_pg_coord_margin is None or coord_margin < worst_pg_coord_margin:
+                                worst_pg_coord_fl = fl
+                                worst_pg_coord_margin = coord_margin
+                finally:
+                    reclose.reset_block_service_status(block_service_status)
+                trip_count = reclose.trip_count(dev_obj, increment=True)
+
+        finally:
+            # Restore in reverse order so that if two backups ever share
+            # an element, the earliest captured (true) original wins.
+            for status in reversed(bu_block_status):
+                reclose.reset_block_service_status(status)
 
         # Update device worst_coord_margin and worst_coord_fl
         device.ph_coord_fl = worst_ph_coord_fl
