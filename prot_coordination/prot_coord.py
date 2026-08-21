@@ -52,14 +52,14 @@ def prot_coordination(app: pft.Application, devices: List):
         if skip_ph_coord and skip_pg_coord:
             continue
 
-        ph_fl_interval = ()
-        pg_fl_interval = ()
+        ph_min_fl = ph_max_fl = None
+        pg_min_fl = pg_max_fl = None
         if not skip_ph_coord:
-            ph_fl_interval = range(
-                int(device.min_device_2ph), int(max_phase_fl) + 1, fl_step)
+            ph_min_fl = int(device.min_device_2ph)
+            ph_max_fl = int(max_phase_fl)
         if not skip_pg_coord:
-            pg_fl_interval = range(
-                int(device.min_device_pg), int(device.max_fl_pg) + 1, fl_step)
+            pg_min_fl = int(device.min_device_pg)
+            pg_max_fl = int(device.max_fl_pg)
 
         # Eligible backups: same-cubicle devices are not backups, and a
         # device is never its own backup. Duplicate references to the
@@ -121,9 +121,17 @@ def prot_coordination(app: pft.Application, devices: List):
                         # and enabled for the current auto-reclose iteration
                         active_elements = get_active_elements(device, fault_type)
 
+                        # Sample the grid plus the points either side of
+                        # each of this device's instantaneous pickups,
+                        # where its operate time steps discontinuously.
+                        ph_fl_samples = sample_fault_levels(
+                            ph_min_fl, ph_max_fl, fl_step,
+                            hiset_currents(active_elements)
+                        )
+
                         dev_fl_trip_register = {}
                         bu_fl_trip_register = {}
-                        for fl in ph_fl_interval:
+                        for fl in ph_fl_samples:
                             dev_fl_trip_register[fl] = None
                             for element in active_elements:
                                 # Calculate protection operate time for element and fl
@@ -167,9 +175,16 @@ def prot_coordination(app: pft.Application, devices: List):
                         # and enabled for the current auto-reclose iteration
                         active_elements = get_active_elements(device, fault_type)
 
+                        # As above, for this device's earth fault
+                        # instantaneous pickups.
+                        pg_fl_samples = sample_fault_levels(
+                            pg_min_fl, pg_max_fl, fl_step,
+                            hiset_currents(active_elements)
+                        )
+
                         dev_fl_trip_register = {}
                         bu_fl_trip_register = {}
-                        for fl in pg_fl_interval:
+                        for fl in pg_fl_samples:
                             dev_fl_trip_register[fl] = None
                             for element in active_elements:
                                 # Calculate protection operate time for element and fl
@@ -308,3 +323,52 @@ def swer_transform(
     )
 
     return us_device_fl
+
+def hiset_currents(prot_elements: List) -> List[float]:
+    """
+    Instantaneous pickup settings for the RelIoc elements in a list.
+
+    These are treated as fault-level values. That is exact for
+    elements whose measured current equals the fault current, and
+    approximate for those with a conversion factor (NPS elements see
+    If/3 for an earth fault, If/sqrt(3) for a phase fault). The
+    residual error is bounded by the step grid, which brackets every
+    discontinuity to within one step regardless.
+    """
+    return [
+        element.GetAttribute("e:cpIpset")
+        for element in prot_elements
+        if element.GetClassName() == 'RelIoc'
+    ]
+
+
+def sample_fault_levels(
+        min_fl: int,
+        max_fl: int,
+        fl_step: int,
+        extra_currents: List
+    ) -> List[int]:
+    """
+    Fault levels to evaluate between min_fl and max_fl.
+
+    A fixed grid of fl_step, plus both interval endpoints and the
+    points either side of each supplied pickup current. range()
+    excludes max_fl unless the span is an exact multiple of the step,
+    and trip time changes steeply either side of an instantaneous
+    pickup, so those points are added explicitly rather than being
+    left to fall between grid steps.
+    """
+    if max_fl < min_fl:
+        return []
+
+    samples = set(range(min_fl, max_fl + 1, fl_step))
+    samples.add(max_fl)
+
+    for current in extra_currents:
+        if current is None:
+            continue
+        for value in (int(current) - 1, int(current)):
+            if min_fl <= value <= max_fl:
+                samples.add(value)
+
+    return sorted(samples)
