@@ -17,7 +17,7 @@ from fault_study import fault_level_study as fs
 from cond_damage import conductor_damage as cd
 from save_results import save_result as sr
 from prot_coordination import prot_coord as pc
-from relays.reach_factors import populate_device_pickups
+from relays.reach_factors import populate_reach_factors
 
 logger = logging.getLogger(__name__)
 
@@ -143,6 +143,13 @@ def begin(
 
     for i, feeder in enumerate(feeders, start=1):
         name = getattr(feeder.obj, "loc_name", str(feeder.obj))
+
+        # Reach factors feed both the Detailed Results sheet and the
+        # coordination sweep bounds, so this stage runs for every
+        # assessment regardless of which studies were selected.
+        logger.info(f"[{i}/{len(feeders)}] {name}: reach factors")
+        populate_reach_factors(region, feeder.devices)
+
         if "Conductor Damage Assessment" in study_selections:
             selected_devices = [
                 device for device in feeder.devices]
@@ -150,12 +157,6 @@ def begin(
             cd.cond_damage(app, selected_devices)
 
         if "Protection Coordination Assessment" in study_selections:
-            # Pickups first: prot_coordination bounds its sweep with
-            # min_device_2ph / min_device_pg, which device_reach_factors
-            # populates. Without this the coordination stage skips every
-            # device.
-            logger.info(f"[{i}/{len(feeders)}] {name}: device pickups")
-            populate_device_pickups(region, feeder.devices)
             logger.info(f"[{i}/{len(feeders)}] {name}: protection coordination")
             pc.prot_coordination(app, feeder.devices)
 

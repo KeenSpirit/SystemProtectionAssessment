@@ -6,7 +6,7 @@ electrical context, fault current data, and network topology.
 """
 
 from dataclasses import dataclass, field
-from typing import Any, List, Optional, TYPE_CHECKING
+from typing import Any, List, Optional, Dict, TYPE_CHECKING
 
 from assets.enums import ElementType, ph_attr_lookup
 
@@ -91,6 +91,15 @@ class Device:
     ph_coord_margin: Optional[float] = None
     pg_coord_fl: Optional[float] = None
     pg_coord_margin: Optional[float] = None
+
+    # Reach factors - calculated by relays.reach_factors.
+    # populate_reach_factors, rendered by format_detailed_results.
+    # The lists inside reach_factors are aligned positionally with
+    # sect_terms as it stood at calculation time; reach_factor_terms
+    # records that order so the reporting layer can verify the
+    # alignment still holds before rendering.
+    reach_factors: Optional[Dict[str, List]] = None
+    reach_factor_terms: List[Any] = field(default_factory=list)
 
     # Topology - populated by network tracing
     sect_terms: List[Any] = field(default_factory=list)

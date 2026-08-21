@@ -634,11 +634,38 @@ def format_detailed_results(region: str, feeder) -> pd.DataFrame:
     for device in feeder.devices:
         device_name = str(device.obj.loc_name)
         elements = device.sect_terms
-
-        # Calculate reach factors
-        dev_reach_factors = device_reach_factors(region, device, elements)
-
         count = len(elements)
+
+        # Reach factors are calculated in the pipeline (see
+        # populate_reach_factors); this layer renders them. The stored
+        # lists are positionally aligned with sect_terms as it stood at
+        # calculation time, so verify that order still holds before
+        # using them - a silent misalignment would attach every reach
+        # factor to the wrong terminal.
+        stored_terms = device.reach_factor_terms
+        aligned = (
+            device.reach_factors is not None
+            and len(stored_terms) == count
+            and all(a is b for a, b in zip(stored_terms, elements))
+        )
+
+        if aligned:
+            dev_reach_factors = device.reach_factors
+        elif device.reach_factors is None:
+            logger.warning(
+                "No stored reach factors for %s/%s; recalculating. The "
+                "reach factor stage did not run for this feeder.",
+                feeder_name, device_name
+            )
+            dev_reach_factors = device_reach_factors(region, device, elements)
+        else:
+            logger.warning(
+                "Stored reach factors for %s/%s do not match the current "
+                "sect_terms order; recalculating. Something re-ordered "
+                "sect_terms after the reach factor stage.",
+                feeder_name, device_name
+            )
+            dev_reach_factors = device_reach_factors(region, device, elements)
 
         fault_levels = {
             'Tfmr Size (kVA)': [None] * count,
