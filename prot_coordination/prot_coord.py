@@ -39,24 +39,27 @@ def prot_coordination(app: pft.Application, devices: List):
         worst_pg_coord_fl = None
         worst_pg_coord_margin = None
 
-        max_phase_fl = trip_time._max_phase_fl(device)
-        ph_min_fl = int(device.min_device_2ph)
-        ph_max_fl = int(max_phase_fl)
-        ph_fl_interval = range(ph_min_fl, ph_max_fl + 1, fl_step)
-        pg_min_fl = int(device.min_device_pg)
-        pg_max_fl = int(device.max_fl_pg)
-        pg_fl_interval = range(pg_min_fl, pg_max_fl + 1, fl_step)
+        max_phase_fl = trip_time.max_phase_fl(device)
+        skip_ph_coord = device.min_device_2ph is None or max_phase_fl is None
+        skip_pg_coord = device.min_device_pg is None or device.max_fl_pg is None
 
-        skip_ph_coord = False
-        skip_pg_coord = False
-        if None in (device.min_device_2ph, max_phase_fl):
+        if skip_ph_coord:
             logger.info(f"{dev_obj.loc_name} phase coordination skipped: "
                         f"missing fault level / pickup data")
-            skip_ph_coord = True
-        if None in (device.min_device_pg, device.max_fl_pg):
+        if skip_pg_coord:
             logger.info(f"{dev_obj.loc_name} ground coordination skipped: "
                         f"missing fault level / pickup data")
-            skip_pg_coord = True
+        if skip_ph_coord and skip_pg_coord:
+            continue
+
+        ph_fl_interval = ()
+        pg_fl_interval = ()
+        if not skip_ph_coord:
+            ph_fl_interval = range(
+                int(device.min_device_2ph), int(max_phase_fl) + 1, fl_step)
+        if not skip_pg_coord:
+            pg_fl_interval = range(
+                int(device.min_device_pg), int(device.max_fl_pg) + 1, fl_step)
 
         while trip_count <= total_trips:
             block_service_status = reclose.set_enabled_elements(dev_obj)
@@ -147,7 +150,7 @@ def prot_coordination(app: pft.Application, devices: List):
                             else:
                                 bu_fault_type = 'Phase-Ground'
                                 bu_fault_level = fl
-                            bu_active_elements = get_active_elements(bu_device, fault_type)
+                            bu_active_elements = get_active_elements(bu_device, bu_fault_type)
                             for element in bu_active_elements:
                                 # Calculate protection operate time for element and fl
                                 if element.GetClassName() == ElementType.FUSE.value:

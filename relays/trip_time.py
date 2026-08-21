@@ -16,7 +16,7 @@ def max_phase_fl(obj: Any) -> Optional[float]:
     return max(candidates) if candidates else None
 
 # =============================================================================
-# RELAY ELEMENT CLEARING TIME
+# FUSE CLEARING TIME
 # =============================================================================
 
 
@@ -105,6 +105,11 @@ def _interpolate_fuse_time(
     x_ratio = (flt_cur - curve_var[k][p]) / (curve_var[k + 1][p] - curve_var[k][p])
     y_diff = curve_var[k][p + 1] - curve_var[k + 1][p + 1]
     return curve_var[k][p + 1] - (y_diff * x_ratio)
+
+
+# =============================================================================
+# RELAY ELEMENT CLEARING TIME
+# =============================================================================
 
 
 def element_trip_time(element: Any, flt_cur: float) -> Optional[float]:
