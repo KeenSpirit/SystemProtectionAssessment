@@ -61,6 +61,33 @@ def prot_coordination(app: pft.Application, devices: List):
             pg_fl_interval = range(
                 int(device.min_device_pg), int(device.max_fl_pg) + 1, fl_step)
 
+        # Backup candidates are independent of both the fault level and
+        # the primary device's reclose trip (set_enabled_elements only
+        # touches dev_obj's own elements), so resolve them once per
+        # device rather than per fault level. Backup elements are read
+        # in the model's current service state; if per-trip backup
+        # reclose configuration is added later, build these lists after
+        # that configuration is applied.
+        bu_ph_candidates = []
+        bu_pg_candidates = []
+        for bu_device in device.us_devices:
+            # If the bu_device is in the same cubicle, ignore it
+            if bu_device.cubicle == device.cubicle:
+                continue
+            if not skip_ph_coord:
+                bu_ph_candidates.append(
+                    (bu_device, get_active_elements(bu_device, '2-Phase'))
+                )
+            if not skip_pg_coord:
+                # Check whether the device is SWER. If so, BU device
+                # trip time must consider the FL seen by the bu device.
+                swer = swer_check(device, bu_device)
+                bu_fault_type = '2-Phase' if swer else 'Phase-Ground'
+                bu_pg_candidates.append(
+                    (bu_device, swer, bu_fault_type,
+                     get_active_elements(bu_device, bu_fault_type))
+                )
+
         while trip_count <= total_trips:
             block_service_status = reclose.set_enabled_elements(dev_obj)
             try:
@@ -88,11 +115,7 @@ def prot_coordination(app: pft.Application, devices: List):
                                 dev_fl_trip_register[fl] = operate_time
 
                         bu_fl_trip_register[fl] = None
-                        for bu_device in device.us_devices:
-                            # If the bu_device is in the same cubicle, ignore it
-                            if bu_device.cubicle == device.cubicle:
-                                continue
-                            bu_active_elements = get_active_elements(bu_device, fault_type)
+                        for bu_device, bu_active_elements in bu_ph_candidates:
                             for element in bu_active_elements:
                                 # Calculate protection operate time for element and fl
                                 if element.GetClassName() == ElementType.FUSE.value:
@@ -138,19 +161,12 @@ def prot_coordination(app: pft.Application, devices: List):
                                 dev_fl_trip_register[fl] = operate_time
 
                         bu_fl_trip_register[fl] = None
-                        for bu_device in device.us_devices:
-                            # If the bu_device is in the same cubicle, ignore it
-                            if bu_device.cubicle == device.cubicle:
-                                continue
-                            # Check whether the device is SWER.
-                            # If so, BU device trip time needs to consider FL seen by bu device
-                            if swer_check(device, bu_device):
-                                bu_fault_type = '2-Phase'
-                                bu_fault_level = swer_transform(device, bu_device, fl)
-                            else:
-                                bu_fault_type = 'Phase-Ground'
-                                bu_fault_level = fl
-                            bu_active_elements = get_active_elements(bu_device, bu_fault_type)
+                        for (bu_device, swer, bu_fault_type,
+                             bu_active_elements) in bu_pg_candidates:
+                            bu_fault_level = (
+                                swer_transform(device, bu_device, fl)
+                                if swer else fl
+                            )
                             for element in bu_active_elements:
                                 # Calculate protection operate time for element and fl
                                 if element.GetClassName() == ElementType.FUSE.value:
