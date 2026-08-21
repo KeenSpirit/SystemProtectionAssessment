@@ -16,6 +16,8 @@ from fdr_open_points import get_open_points as gop
 from fault_study import fault_level_study as fs
 from cond_damage import conductor_damage as cd
 from save_results import save_result as sr
+from prot_coordination import prot_coord as pc
+from relays.reach_factors import populate_device_pickups
 
 logger = logging.getLogger(__name__)
 
@@ -122,7 +124,11 @@ def begin(
     logger.info(f"{len(feeders)} feeders to assess")
 
     # Add "Conductor Damage Assessment" to study_selections for a conductor damage assessment
-    study_selections = ["Fault Level Study (all relays configured in model)", "Conductor Damage Assessment"]
+    study_selections = [
+        "Fault Level Study (all relays configured in model)",
+        "Conductor Damage Assessment",
+        "Protection Coordination Assessment",
+    ]
     # Process feeders
     for i, feeder in enumerate(feeders, start=1):
         name = getattr(feeder.obj, "loc_name", str(feeder.obj))
@@ -142,6 +148,16 @@ def begin(
                 device for device in feeder.devices]
             logger.info(f"[{i}/{len(feeders)}] {name}: conductor damage")
             cd.cond_damage(app, selected_devices)
+
+        if "Protection Coordination Assessment" in study_selections:
+            # Pickups first: prot_coordination bounds its sweep with
+            # min_device_2ph / min_device_pg, which device_reach_factors
+            # populates. Without this the coordination stage skips every
+            # device.
+            logger.info(f"[{i}/{len(feeders)}] {name}: device pickups")
+            populate_device_pickups(region, feeder.devices)
+            logger.info(f"[{i}/{len(feeders)}] {name}: protection coordination")
+            pc.prot_coordination(app, feeder.devices)
 
     logger.info("Saving results")
     output_file = sr.save_dataframe(

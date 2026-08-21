@@ -52,11 +52,16 @@ reload(cd)
 # =============================================================================
 
 # Column order for the flat Summary Results table. The first two columns
-# identify the row; columns 3-19 are the per-device metrics that were
+# identify the row; columns 3-23 are the per-device metrics that were
 # formerly row labels in the transposed per-feeder blocks; the last column
 # carries the feeder's open points, repeated on every row of that feeder.
 # Label spacing is preserved verbatim from the previous layout so that
 # existing downstream lookups keep matching.
+#
+# The four coordination columns are always present. They are blank for
+# any device prot_coordination could not assess (missing fault level or
+# pickup data), and blank for every device if the coordination stage did
+# not run.
 SUMMARY_COLUMNS = [
     'Feeder',
     'Protection device',
@@ -77,6 +82,10 @@ SUMMARY_COLUMNS = [
     'TR Max PG',
     'Downstream Devices',
     'Back-up Device',
+    'Ph Coord Margin (s)',
+    'Ph Coord FL (A)',
+    'PG Coord Margin (s)',
+    'PG Coord FL (A)',
     'Feeder Open Points',
 ]
 
@@ -562,6 +571,10 @@ def format_study_results(feeder) -> pd.DataFrame:
             'TR Max PG': tr_max_pg,
             'Downstream Devices': ', '.join(ds_names),
             'Back-up Device': ', '.join(us_names),
+            'Ph Coord Margin (s)': safe_round(device.ph_coord_margin),
+            'Ph Coord FL (A)': safe_numeric(device.ph_coord_fl),
+            'PG Coord Margin (s)': safe_round(device.pg_coord_margin),
+            'PG Coord FL (A)': safe_numeric(device.pg_coord_fl),
             'Feeder Open Points': open_points,
         })
 
@@ -745,6 +758,29 @@ def safe_numeric(value: Any) -> Any:
         return float(value) if value else None
     except (ValueError, TypeError):
         return None
+
+
+def safe_round(value: Any, digits: int = 3) -> Any:
+    """
+    Coerce a value to a number and round it for display.
+
+    Rounding happens here rather than in the assessment modules so the
+    stored dataclass values keep full precision and only the Excel
+    presentation is truncated.
+
+    Args:
+        value: Raw value from a dataclass attribute.
+        digits: Decimal places to round to.
+
+    Returns:
+        The rounded float, or whatever ``safe_numeric`` produced for a
+        missing value (left as-is so the column keeps a numeric dtype
+        and Excel receives an empty cell).
+    """
+    numeric = safe_numeric(value)
+    if numeric is None or pd.isna(numeric):
+        return numeric
+    return round(float(numeric), digits)
 
 
 def _padded(values: Optional[List], length: int) -> List:

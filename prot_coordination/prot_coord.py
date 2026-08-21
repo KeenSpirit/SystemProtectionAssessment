@@ -40,8 +40,8 @@ def prot_coordination(app: pft.Application, devices: List):
         worst_pg_coord_margin = None
 
         max_phase_fl = trip_time.max_phase_fl(device)
-        skip_ph_coord = device.min_device_2ph is None or max_phase_fl is None
-        skip_pg_coord = device.min_device_pg is None or device.max_fl_pg is None
+        skip_ph_coord = not device.min_device_2ph or not max_phase_fl
+        skip_pg_coord = not device.min_device_pg or not device.max_fl_pg
 
         if skip_ph_coord:
             logger.info(f"{dev_obj.loc_name} phase coordination skipped: "

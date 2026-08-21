@@ -146,6 +146,33 @@ def device_reach_factors(
     return primary_results | bu_results
 
 
+def populate_device_pickups(region: str, devices: List["Device"]) -> None:
+    """
+    Populate min_device_2ph / min_device_pg on each device.
+
+    device_reach_factors sets these as a side effect of computing the
+    earth fault reach factors, and prot_coordination needs them to
+    bound its fault level sweep. This wrapper exists so that dependency
+    is an explicit pipeline stage rather than an accident of when the
+    reporting layer happens to run.
+
+    The reporting layer calls device_reach_factors again at render
+    time. The calculation reads the model and mutates nothing, so the
+    duplicate is safe; folding the two into a single stage that stores
+    its results for reporting is a worthwhile follow-up.
+
+    Args:
+        region: Network region ('SEQ' or 'Regional Models').
+        devices: Devices with sect_terms populated - that is, after
+            the fault study has completed for this feeder.
+
+    Side Effects:
+        Sets min_device_2ph and min_device_pg on each device.
+    """
+    for device in devices:
+        device_reach_factors(region, device, device.sect_terms)
+
+
 def determine_pickup_values(
     device_pf: Union["pft.ElmRelay", "pft.RelFuse"]
 ) -> List[float]:
