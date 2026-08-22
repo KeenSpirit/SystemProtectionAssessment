@@ -498,9 +498,12 @@ def format_fl_results(region: str, feeders: List) -> Dict:
     fault_studies_pd = {}
 
     for feeder in feeders:
-        summary_df = format_study_results(feeder)
-        detailed_df = format_detailed_results(region, feeder)
-
+        try:
+            summary_df = format_study_results(feeder)
+            detailed_df = format_detailed_results(region, feeder)
+        except Exception:
+            logger.exception("Fault level formatting failed for feeder %s; skipping", feeder.loc_name)
+            continue
         fault_studies_pd[feeder.obj.loc_name] = [
             summary_df,
             detailed_df
@@ -759,6 +762,7 @@ def format_detailed_results(region: str, feeder) -> pd.DataFrame:
 
         frames.append(df.reindex(columns=DETAILED_COLUMNS))
 
+    frames = [f for f in frames if f is not None and not f.empty]
     if not frames:
         return pd.DataFrame(columns=DETAILED_COLUMNS)
 
