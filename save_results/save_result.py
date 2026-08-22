@@ -549,7 +549,10 @@ def format_study_results(feeder) -> pd.DataFrame:
 
         if max_ds_tr is not None:
             if getattr(max_ds_tr, 'term', None) is not None:
-                tr_site = str(max_ds_tr.term.cpSubstat.loc_name)
+                if max_ds_tr.term.cpSubstat is not None:
+                    tr_site = str(max_ds_tr.term.cpSubstat.loc_name)
+                else:
+                    tr_site = str(max_ds_tr.term.loc_name)
             tr_kva = safe_numeric(getattr(max_ds_tr, 'load_kva', None))
             tr_max_ph = safe_numeric(getattr(max_ds_tr, 'max_ph', None))
             tr_max_pg = safe_numeric(getattr(max_ds_tr, 'max_pg', None))
