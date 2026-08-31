@@ -602,7 +602,8 @@ def _calculate_backup_reach_factors(
     region: str,
     device: "Device",
     elements: List,
-    fault_impedance
+    fault_impedance,
+    system_normal: bool = False
 ) -> Dict:
     """
     Calculate backup device reach factors.
@@ -612,9 +613,15 @@ def _calculate_backup_reach_factors(
         device: Protection device dataclass.
         elements: List of network elements to evaluate.
         fault_impedance: Fault impedance module reference.
+        system_normal: Read system normal minima instead of minimum
+            condition values. Pickup settings are unaffected - they
+            belong to the backup device, not the study case - so only
+            the fault levels change.
 
     Returns:
-        Dictionary with backup reach factor data.
+        Dictionary with backup reach factor data. Keys are the same
+        for both study conditions; the caller relabels the system
+        normal results with the sn_ prefix.
     """
     num_elements = len(elements)
 
@@ -664,13 +671,15 @@ def _calculate_backup_reach_factors(
     # Backup earth fault reach factors
     bu_ef_rf = _calculate_bu_ef_rf(
         region, elements, bu_device_for_transform, effective_bu_ef_pickup,
-        bu_ph_pickup, fault_impedance
+        bu_ph_pickup, fault_impedance, system_normal
     )
 
     # Backup phase reach factors
     if bu_ph_pickup and bu_ph_pickup > 0:
         bu_ph_rf = [
-            _safe_ratio(element.min_fl_2ph, bu_ph_pickup)
+            _safe_ratio(
+                _element_min_fl_2ph(element, system_normal), bu_ph_pickup
+            )
             for element in elements
         ]
     else:
@@ -679,7 +688,7 @@ def _calculate_backup_reach_factors(
     # Backup NPS reach factors
     bu_nps_ef_rf, bu_nps_ph_rf = _calculate_bu_nps_rf(
         region, elements, bu_device_for_transform, bu_nps_pickup,
-        fault_impedance, num_elements
+        fault_impedance, num_elements, system_normal
     )
 
     return {
@@ -699,7 +708,8 @@ def _calculate_bu_ef_rf(
     bu_device: "Device",
     effective_bu_ef_pickup: float,
     bu_ph_pickup: float,
-    fault_impedance
+    fault_impedance,
+    system_normal: bool = False
 ) -> List:
     """
     Calculate backup earth fault reach factors.
@@ -711,6 +721,8 @@ def _calculate_bu_ef_rf(
         effective_bu_ef_pickup: Effective backup EF pickup in Amperes.
         bu_ph_pickup: Backup phase pickup in Amperes.
         fault_impedance: Fault impedance module reference.
+        system_normal: Read system normal minima instead of minimum
+            condition values.
 
     Returns:
         List of backup EF reach factors. 'NA' if no pickup.
@@ -720,15 +732,12 @@ def _calculate_bu_ef_rf(
 
     bu_ef_rf = []
     for element in elements:
-        if element.obj.GetClassName() == ElementType.TERM.value:
-            element_fl_pg = fault_impedance.get_terminal_pg_fault(
-                region, element
-            )
-        else:
-            element_fl_pg = element.min_fl_pg
+        element_fl_pg = _element_min_fl_pg(
+            region, element, fault_impedance, system_normal
+        )
 
-            # No minimum earth fault result at this element; reach cannot
-            # be assessed.
+        # No earth fault result at this element; reach cannot be
+        # assessed.
         if element_fl_pg is None:
             bu_ef_rf.append('NA')
             continue
@@ -751,7 +760,8 @@ def _calculate_bu_nps_rf(
     bu_device: "Device",
     bu_nps_pickup: float,
     fault_impedance,
-    num_elements: int
+    num_elements: int,
+    system_normal: bool = False
 ) -> tuple:
     """
     Calculate backup NPS reach factors for earth and phase faults.
@@ -763,6 +773,8 @@ def _calculate_bu_nps_rf(
         bu_nps_pickup: Backup NPS pickup in Amperes.
         fault_impedance: Fault impedance module reference.
         num_elements: Number of elements.
+        system_normal: Read system normal minima instead of minimum
+            condition values.
 
     Returns:
         Tuple of (bu_nps_ef_rf, bu_nps_ph_rf) lists.
@@ -772,15 +784,12 @@ def _calculate_bu_nps_rf(
 
     bu_nps_ef_rf = []
     for element in elements:
-        if element.obj.GetClassName() == ElementType.TERM.value:
-            element_fl_pg = fault_impedance.get_terminal_pg_fault(
-                region, element
-            )
-        else:
-            element_fl_pg = element.min_fl_pg
+        element_fl_pg = _element_min_fl_pg(
+            region, element, fault_impedance, system_normal
+        )
 
-            # No minimum earth fault result at this element; reach cannot
-            # be assessed.
+        # No earth fault result at this element; reach cannot be
+        # assessed.
         if element_fl_pg is None:
             bu_nps_ef_rf.append('NA')
             continue
@@ -795,7 +804,11 @@ def _calculate_bu_nps_rf(
         bu_nps_ef_rf.append(rf)
 
     bu_nps_ph_rf = [
-        _safe_ratio(element.min_fl_2ph, bu_nps_pickup, math.sqrt(3))
+        _safe_ratio(
+            _element_min_fl_2ph(element, system_normal),
+            bu_nps_pickup,
+            math.sqrt(3)
+        )
         for element in elements
     ]
 
