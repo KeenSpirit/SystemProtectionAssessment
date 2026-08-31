@@ -62,7 +62,8 @@ def _safe_ratio(numerator, denominator, divisor: float = 1.0):
 def device_reach_factors(
     region: str,
     device: "Device",
-    elements: List[Union["Termination", "Line"]]
+    elements: List[Union["Termination", "Line"]],
+    record_device_minima: bool = True
 ) -> Dict[str, List]:
     """
     Calculate reach factors for a protection device at multiple locations.
@@ -75,6 +76,10 @@ def device_reach_factors(
         device: Protection device dataclass.
         elements: List of Termination or Line dataclasses to evaluate
             reach to.
+        record_device_minima: When True (the default), the earth fault
+            pass writes device.min_device_2ph and min_device_pg as a
+            side effect. Pass False for any call that is not the
+            authoritative sect_terms pass - see Side Effects below.
 
     Returns:
         Dictionary with reach factor data:
@@ -87,6 +92,20 @@ def device_reach_factors(
 
         Each reach factor list has one value per element in the input
         list. 'NA' indicates the protection function is not available.
+
+    Side Effects:
+        With record_device_minima=True, sets device.min_device_2ph and
+        device.min_device_pg to the minimum fault levels actually seen
+        by the relay across the supplied elements. prot_coordination
+        uses these to bound its fault level sweep, so they must come
+        from the terminal pass in populate_reach_factors.
+
+        A second call over device.sect_lines would otherwise overwrite
+        terminal-derived minima with line-derived ones, silently
+        shifting every coordination margin on the feeder. Such calls
+        must pass record_device_minima=False. The flag makes this
+        independent of the order in which the passes run, which
+        sequencing alone would not.
 
     Example:
         >>> factors = device_reach_factors('SEQ', device, device.sect_terms)
@@ -107,7 +126,8 @@ def device_reach_factors(
 
     # Calculate primary reach factors
     ef_rf = _calculate_ef_reach_factors(
-        region, device, elements, effective_ef_pickup, ph_pickup, fault_impedance
+        region, device, elements, effective_ef_pickup, ph_pickup,
+        fault_impedance, record_device_minima
     )
     ph_rf = _calculate_ph_reach_factors(elements, ph_pickup)
     nps_ef_rf, nps_ph_rf = _calculate_nps_reach_factors(
@@ -335,7 +355,8 @@ def _calculate_ef_reach_factors(
     elements: List,
     effective_ef_pickup: float,
     ph_pickup: float,
-    fault_impedance
+    fault_impedance,
+    record_device_minima: bool = True
 ) -> List:
     """
     Calculate earth fault reach factors for all elements.
@@ -347,6 +368,8 @@ def _calculate_ef_reach_factors(
         effective_ef_pickup: Effective earth fault pickup in Amperes.
         ph_pickup: Phase pickup in Amperes.
         fault_impedance: Fault impedance module reference.
+        record_device_minima: When True, write the observed minima back
+        to device.min_device_2ph / min_device_pg.
 
     Returns:
         List of reach factors, one per element. 'NA' if no pickup.
@@ -390,15 +413,19 @@ def _calculate_ef_reach_factors(
 
         ef_rf.append(rf)
 
-    # Update minimum phase and earth fault currents actually seen by the relay
-    if device_min_2ph is not None and device_min_2ph < device.min_fl_2ph:
-        device.min_device_2ph = device_min_2ph
-    else:
-        device.min_device_2ph = device.min_fl_2ph
-    if device_min_pg is not None:
-        device.min_device_pg = device_min_pg
-    else:
-        device.min_device_pg = device.min_fl_pg
+    # Update minimum phase and earth fault currents actually seen by
+    # the relay. Only the authoritative sect_terms pass may do this;
+    # a supplementary pass over another element set would corrupt the
+    # coordination sweep bounds.
+    if record_device_minima:
+        if device_min_2ph is not None and device_min_2ph < device.min_fl_2ph:
+            device.min_device_2ph = device_min_2ph
+        else:
+            device.min_device_2ph = device.min_fl_2ph
+        if device_min_pg is not None:
+            device.min_device_pg = device_min_pg
+        else:
+            device.min_device_pg = device.min_fl_pg
 
     return ef_rf
 
