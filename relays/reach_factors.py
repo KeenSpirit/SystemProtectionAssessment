@@ -59,6 +59,54 @@ def _safe_ratio(numerator, denominator, divisor: float = 1.0):
     return round(numerator / divisor / denominator, 2)
 
 
+def _element_min_fl_pg(
+    region: str,
+    element: Union["Termination", "Line"],
+    fault_impedance,
+    system_normal: bool = False
+):
+    """
+    Get the minimum phase-ground fault level at an element.
+
+    Terminals pass through get_terminal_pg_fault, which applies the
+    region and construction dependent fault impedance (0Ω for SEQ,
+    50Ω overhead / 10Ω underground for Regional). Lines carry the
+    corrected value directly - update_line_data already routes their
+    PG levels through the same function - so the two paths agree.
+
+    Args:
+        region: Network region ('SEQ' or 'Regional Models').
+        element: Termination or Line dataclass.
+        fault_impedance: Fault impedance module reference.
+        system_normal: Read system normal minima instead of minima.
+
+    Returns:
+        Fault current in Amperes, or None where no result exists.
+    """
+    if element.obj.GetClassName() == ElementType.TERM.value:
+        return fault_impedance.get_terminal_pg_fault(
+            region, element, system_normal
+        )
+    return element.min_sn_fl_pg if system_normal else element.min_fl_pg
+
+
+def _element_min_fl_2ph(
+    element: Union["Termination", "Line"],
+    system_normal: bool = False
+):
+    """
+    Get the minimum 2-phase fault level at an element.
+
+    Args:
+        element: Termination or Line dataclass.
+        system_normal: Read system normal minima instead of minima.
+
+    Returns:
+        Fault current in Amperes, or None where no result exists.
+    """
+    return element.min_sn_fl_2ph if system_normal else element.min_fl_2ph
+
+
 def device_reach_factors(
     region: str,
     device: "Device",
@@ -163,7 +211,46 @@ def device_reach_factors(
             region, device, elements, fault_impedance
         )
 
-    return primary_results | bu_results
+    # System normal backup reach factors. These answer a different
+    # question from the minimum-condition backup factors above -
+    # whether backup reach holds under the normal running arrangement
+    # rather than under the worst credible outage - and carry their
+    # own exception threshold (1.5, against 1.3 for the minimum case).
+    #
+    # record_device_minima is False on every call here: the
+    # authoritative coordination bounds come from the minimum-condition
+    # sect_terms pass and must not be overwritten with system normal
+    # values.
+    if device.obj.GetClassName() == ElementType.FUSE.value:
+        sn_raw = {
+            'bu_ef_rf': _calculate_ef_reach_factors(
+                region, device, elements, effective_ef_pickup, ph_pickup,
+                fault_impedance, record_device_minima=False,
+                system_normal=True
+            ),
+            'bu_ph_rf': _calculate_ph_reach_factors(
+                elements, ph_pickup, system_normal=True
+            ),
+        }
+        sn_nps_ef_rf, sn_nps_ph_rf = _calculate_nps_reach_factors(
+            region, device, elements, nps_pickup, fault_impedance,
+            system_normal=True
+        )
+        sn_raw['bu_nps_ef_rf'] = sn_nps_ef_rf
+        sn_raw['bu_nps_ph_rf'] = sn_nps_ph_rf
+    else:
+        sn_raw = _calculate_backup_reach_factors(
+            region, device, elements, fault_impedance, system_normal=True
+        )
+
+    sn_results = {
+        'sn_bu_ef_rf': sn_raw['bu_ef_rf'],
+        'sn_bu_ph_rf': sn_raw['bu_ph_rf'],
+        'sn_bu_nps_ef_rf': sn_raw['bu_nps_ef_rf'],
+        'sn_bu_nps_ph_rf': sn_raw['bu_nps_ph_rf'],
+    }
+
+    return primary_results | bu_results | sn_results
 
 
 def populate_reach_factors(region: str, devices: List["Device"]) -> None:
@@ -356,7 +443,8 @@ def _calculate_ef_reach_factors(
     effective_ef_pickup: float,
     ph_pickup: float,
     fault_impedance,
-    record_device_minima: bool = True
+    record_device_minima: bool = True,
+    system_normal: bool = False
 ) -> List:
     """
     Calculate earth fault reach factors for all elements.
@@ -382,13 +470,9 @@ def _calculate_ef_reach_factors(
 
     ef_rf = []
     for element in elements:
-        # Get appropriate fault level based on element type
-        if element.obj.GetClassName() == ElementType.TERM.value:
-            element_fl_pg = fault_impedance.get_terminal_pg_fault(
-                region, element
-            )
-        else:
-            element_fl_pg = element.min_fl_pg
+        element_fl_pg = _element_min_fl_pg(
+            region, element, fault_impedance, system_normal
+        )
 
         # No minimum earth fault result at this element; reach cannot
         # be assessed. Lines carry min_fl_pg raw, unlike terminals
@@ -430,7 +514,11 @@ def _calculate_ef_reach_factors(
     return ef_rf
 
 
-def _calculate_ph_reach_factors(elements: List, ph_pickup: float) -> List:
+def _calculate_ph_reach_factors(
+    elements: List,
+    ph_pickup: float,
+    system_normal: bool = False
+) -> List:
     """
     Calculate phase fault reach factors for all elements.
 
@@ -444,7 +532,10 @@ def _calculate_ph_reach_factors(elements: List, ph_pickup: float) -> List:
     if ph_pickup <= 0:
         return ['NA'] * len(elements)
 
-    return [_safe_ratio(element.min_fl_2ph, ph_pickup) for element in elements]
+    return [
+        _safe_ratio(_element_min_fl_2ph(element, system_normal), ph_pickup)
+        for element in elements
+    ]
 
 
 def _calculate_nps_reach_factors(
@@ -452,7 +543,8 @@ def _calculate_nps_reach_factors(
     device: "Device",
     elements: List,
     nps_pickup: float,
-    fault_impedance
+    fault_impedance,
+    system_normal: bool = False
 ) -> tuple:
     """
     Calculate NPS reach factors for earth and phase faults.
@@ -472,12 +564,9 @@ def _calculate_nps_reach_factors(
 
     nps_ef_rf = []
     for element in elements:
-        if element.obj.GetClassName() == ElementType.TERM.value:
-            element_fl_pg = fault_impedance.get_terminal_pg_fault(
-                region, element
-            )
-        else:
-            element_fl_pg = element.min_fl_pg
+        element_fl_pg = _element_min_fl_pg(
+            region, element, fault_impedance, system_normal
+        )
 
         # No minimum earth fault result at this element; reach cannot
         # be assessed.
@@ -498,7 +587,11 @@ def _calculate_nps_reach_factors(
 
     # NPS phase fault reach factors
     nps_ph_rf = [
-        _safe_ratio(element.min_fl_2ph, nps_pickup, math.sqrt(3))
+        _safe_ratio(
+            _element_min_fl_2ph(element, system_normal),
+            nps_pickup,
+            math.sqrt(3)
+        )
         for element in elements
     ]
 
