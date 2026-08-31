@@ -30,6 +30,8 @@ class Line:
         l_l_volts: Line-to-line voltage in kV
         line_type: Conductor type description (e.g., "AAC/S 7/4.50")
         thermal_rating: Thermal current rating in Amps, or "NA" for cables
+        length: Circuit length in km (PF 'dline'), or None if unreadable
+        constr: Construction class - "OH", "UG" or "SWER"
 
     Maximum Fault Currents (populated by fault study):
         max_fl_3ph: Maximum 3-phase fault current (A)
@@ -68,6 +70,8 @@ class Line:
     l_l_volts: float
     line_type: str
     thermal_rating: Union[float, str]  # Can be "NA" for cables
+    length: Optional[float] = None
+    constr: Optional[str] = None
 
     # Maximum fault currents - populated by fault study
     max_fl_3ph: Optional[float] = None
@@ -130,7 +134,73 @@ def initialise_line_dataclass(
         l_l_volts=_get_voltage(elmlne),
         line_type=line_type,
         thermal_rating=thermal_rating,
+        length=_get_length(elmlne),
+        constr=determine_line_const(elmlne),
     )
+
+
+def determine_line_const(line: "pft.ElmLne") -> str:
+    """
+    Determine the construction class of a line.
+
+    Args:
+        line: PowerFactory ElmLne object.
+
+    Returns:
+        One of "OH", "UG", "SWER".
+    """
+
+    try:
+        line_type = line.typ_id
+        if line_type is not None and 'SWER' in line_type.loc_name:
+            return "SWER"
+    except AttributeError:
+        pass
+
+    try:
+        if line.IsCable() or "CABLE" in line.loc_name:
+            return "UG"
+        if line.typ_id is not None and line.typ_id.HasAttribute("cohl_"):
+            return "UG"
+    except AttributeError:
+        pass
+
+    return "OH"
+
+
+def is_overhead(line: Line) -> bool:
+    """
+    Report whether a line is overhead construction.
+
+    SWER lines are overhead, so both "OH" and "SWER" return True.
+    This is the single definition of "overhead" for length
+    aggregation; testing ``constr == "OH"`` elsewhere would silently
+    drop SWER km from every regional feeder.
+
+    Args:
+        line: Line dataclass with constr populated.
+
+    Returns:
+        True for overhead (including SWER) construction.
+    """
+    return line.constr in ("OH", "SWER")
+
+
+def _get_length(line: "pft.ElmLne") -> Optional[float]:
+    """
+    Read a line's circuit length in km.
+
+    Args:
+        line: PowerFactory ElmLne object.
+
+    Returns:
+        Length in km, or None if the attribute is missing or
+        non-numeric.
+    """
+    try:
+        return float(line.GetAttribute("dline"))
+    except (AttributeError, TypeError, ValueError):
+        return None
 
 
 def _get_phases(line: "pft.ElmLne") -> int:

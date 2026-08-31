@@ -645,9 +645,7 @@ def format_detailed_results(region: str, feeder) -> pd.DataFrame:
         # Reach factors are calculated in the pipeline (see
         # populate_reach_factors); this layer renders them. The stored
         # lists are positionally aligned with sect_terms as it stood at
-        # calculation time, so verify that order still holds before
-        # using them - a silent misalignment would attach every reach
-        # factor to the wrong terminal.
+        # calculation time.
         stored_terms = device.reach_factor_terms
         aligned = (
             device.reach_factors is not None
