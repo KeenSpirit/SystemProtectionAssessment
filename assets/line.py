@@ -6,7 +6,7 @@ and conductor damage assessment results.
 """
 
 from dataclasses import dataclass
-from typing import Optional, Union, TYPE_CHECKING
+from typing import Optional, Dict,Union, TYPE_CHECKING
 
 import assets.utils as utils
 
@@ -94,6 +94,10 @@ class Line:
     pg_energy: Optional[float] = None
     pg_clear_time: Optional[float] = None
     pg_fl: Optional[float] = None
+
+    # Reach factors - populated by populate_line_reach_factors after
+    # line fault levels exist (pipeline stage 12).
+    reach_factors: Optional[Dict[str, Union[float, str]]] = None
 
 
 def initialise_line_dataclass(

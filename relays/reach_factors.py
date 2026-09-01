@@ -29,6 +29,10 @@ if TYPE_CHECKING:
     from assets.termination import Termination
     from assets.line import Line
 
+import logging
+
+logger = logging.getLogger(__name__)
+
 # Fuse pickup is taken as twice the fuse rated current: the fuse
 # minimum-melt characteristic sits well above rating, and this factor
 # approximates the effective pickup used for reach-factor comparison
@@ -282,6 +286,63 @@ def populate_reach_factors(region: str, devices: List["Device"]) -> None:
             region, device, device.sect_terms
         )
         device.reach_factor_terms = list(device.sect_terms)
+
+
+def populate_line_reach_factors(region: str, devices: List["Device"]) -> None:
+    """
+    Calculate and store per-line reach factors for each device.
+
+    The line counterpart of populate_reach_factors. Where that stage
+    evaluates reach at the section's terminals for the Excel report,
+    this one evaluates it at the section's lines so reach exceptions
+    can be expressed as a length. Lines carry impedance-corrected
+    fault levels from update_line_data, so both passes rest on the
+    same fault impedance assumptions.
+
+    Must run after update_line_data (pipeline stage 12) has populated
+    line fault levels; earlier, every factor comes back 'NA'. Always
+    calls with record_device_minima=False - the coordination sweep
+    bounds belong to the terminal pass, regardless of the order the
+    two stages run in.
+
+    Args:
+        region: Network region ('SEQ' or 'Regional Models').
+        devices: Devices with sect_lines populated and line fault
+            levels set.
+
+    Side Effects:
+        Sets reach_factors on each Line dataclass: the *_rf keys from
+        device_reach_factors, one value per family, 'NA' where the
+        family cannot be assessed. Devices whose result lists come
+        back misaligned with sect_lines store nothing - a partial or
+        shifted dict would misattribute reach to the wrong km, which
+        is worse than a gap.
+    """
+    for device in devices:
+        lines = device.sect_lines
+        if not lines:
+            continue
+
+        factors = device_reach_factors(
+            region, device, lines, record_device_minima=False
+        )
+
+        rf_keys = [key for key in factors if key.endswith('_rf')]
+
+        misaligned = [
+            key for key in rf_keys if len(factors[key]) != len(lines)
+        ]
+        if misaligned:
+            logger.error(
+                "%s: line reach factor lists misaligned with sect_lines "
+                "(%s lines); storing nothing for this device. Keys "
+                "affected: %s",
+                device.obj.loc_name, len(lines), ", ".join(misaligned)
+            )
+            continue
+
+        for i, line in enumerate(lines):
+            line.reach_factors = {key: factors[key][i] for key in rf_keys}
 
 
 def determine_pickup_values(
