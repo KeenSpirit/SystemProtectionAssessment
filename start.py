@@ -16,6 +16,7 @@ from fdr_open_points import get_open_points as gop
 from fault_study import fault_level_study as fs
 from cond_damage import conductor_damage as cd
 from save_results import save_result as sr
+from save_results import dashboard_writer
 from prot_coordination import prot_coord as pc
 from relays.reach_factors import (populate_reach_factors,
                                   populate_line_reach_factors)
@@ -70,6 +71,8 @@ def setup_stdout_logging(level: int = logging.INFO) -> None:
 def begin(
     app: pft.Application,
     output_dir: Optional[Path] = None,
+    dashboard_dir: Optional[Path] = None,
+    dashboard_run_id: Optional[str] = None,
 ) -> Dict[str, Any]:
 
     setup_stdout_logging()
@@ -167,14 +170,38 @@ def begin(
         app, region, study_selections, external_grid, feeders,
         output_dir=output_dir,
     )
+
+    project_name = app.GetActiveProject().loc_name
+
+    # Dashboard fact output A failed
+    # write is logged and reported as None, so the batch manifest can
+    # distinguish "assessed, dashboard missing" from "assessed".
+    dashboard_result = None
+    if dashboard_dir is not None:
+        run_id = dashboard_run_id or time.strftime("%Y%m%d_%H%M%S")
+        try:
+            dashboard_result = dashboard_writer.write_dashboard_facts(
+                dashboard_dir,
+                run_id,
+                str(project_name),
+                region,
+                feeders,
+            )
+        except Exception:
+            logger.exception(
+                "Dashboard fact write failed for %s; workbook results "
+                "are unaffected", project_name
+            )
+
     logger.info("System Protection Assessment complete")
 
     return {
-        "project": app.GetActiveProject().loc_name,
+        "project": project_name,
         "region": region,
         "radial_feeders_detected": len(radial_list),
         "feeders_assessed": len(feeders),
         "output_file": output_file,
+        "dashboard": dashboard_result,
     }
 
 
