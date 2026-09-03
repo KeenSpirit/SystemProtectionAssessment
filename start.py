@@ -16,7 +16,7 @@ from fdr_open_points import get_open_points as gop
 from fault_study import fault_level_study as fs
 from cond_damage import conductor_damage as cd
 from save_results import save_result as sr
-from save_results import dashboard_facts
+from save_results import dashboard_writer
 from prot_coordination import prot_coord as pc
 from relays.reach_factors import (populate_reach_factors,
                                   populate_line_reach_factors)

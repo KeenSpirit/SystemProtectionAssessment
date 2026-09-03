@@ -21,11 +21,14 @@ Usage:
         # ... perform analysis ...
 """
 
+import logging
 import uuid
 from contextlib import contextmanager
 from typing import Generator
 
 from pf_config import pft
+
+logger = logging.getLogger(__name__)
 
 
 __all__ = [
@@ -109,20 +112,69 @@ def app_manager(
         yield app
 
 
+
     finally:
-        echo = app.GetFromStudyCase('ComEcho')
-        echo.iopt_err = True
-        echo.iopt_wrng = True
-        echo.iopt_info = True
-        echo.iopt_oth = True
-        app.EchoOn()
-        app.SetGuiUpdateEnabled(1)
+        # Teardown steps are independently guarded. Previously any one
+        # failure aborted the rest and propagated out of __exit__,
+        # which meant a PowerFactory fault during cleanup destroyed the
+        # whole batch run rather than one project - and left the echo,
+        # GUI-update and write-cache state unrestored for every project
+        # that followed. Each step now runs regardless of what the
+        # previous one did.
+        #
+        # Ordering is deliberate: the write cache is flushed before the
+        # cosmetic restores, because pending model changes are the only
+        # thing here that cannot be recovered by a later run.
+        try:
+            if app.IsWriteCacheEnabled():
+                app.WriteChangesToDb()
+                app.SetWriteCacheEnabled(0)
+        except Exception:
+            # Pending changes may not have persisted. This is the one
+            # teardown failure with data consequences, so it is an
+            # error rather than a warning.
+            logger.exception(
+                "app_manager: flushing the write cache failed; pending "
+                "model changes may not have been written to the database"
+            )
 
-        if app.IsWriteCacheEnabled():
-            app.WriteChangesToDb()
-            app.SetWriteCacheEnabled(0)
+        try:
+            echo = app.GetFromStudyCase('ComEcho')
+            echo.iopt_err = True
+            echo.iopt_wrng = True
+            echo.iopt_info = True
+            echo.iopt_oth = True
+            app.EchoOn()
+        except Exception:
+            logger.warning(
+                "app_manager: restoring the echo failed", exc_info=True
+            )
 
-        app.ClearRecycleBin()
+        try:
+            app.SetGuiUpdateEnabled(1)
+        except Exception:
+            logger.warning(
+                "app_manager: re-enabling GUI updates failed", exc_info=True
+            )
+
+        try:
+            app.SetUserBreakEnabled(0)
+        except Exception:
+            logger.warning(
+                "app_manager: disabling user break failed", exc_info=True
+            )
+
+        try:
+            # Housekeeping only. Nothing downstream depends on the
+            # recycle bin being empty, so a failure here must never
+            # end a run
+            app.ClearRecycleBin()
+        except Exception:
+            logger.warning(
+                "app_manager: ClearRecycleBin failed; the recycle bin "
+                "was left as-is", exc_info=True
+            )
+
         del app
 
 
