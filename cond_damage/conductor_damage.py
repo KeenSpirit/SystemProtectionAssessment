@@ -137,6 +137,10 @@ def cond_damage(app: pft.Application, devices: List) -> None:
         # this device's section and across both fault passes. Scoped to
         # the device so a new device never sees another's elements.
         element_cache = {}
+        # Element clearing times and instantaneous pickups, keyed on
+        # (element, fault type, fault level). Same device scope, and
+        # shared across trips: blocking changes outserv, not curves.
+        clear_time_cache = {}
 
         # Phase fault assessment
         line_fault_type = '2-Phase'
@@ -171,7 +175,7 @@ def cond_damage(app: pft.Application, devices: List) -> None:
                 for i, line in enumerate(lines):
                     min_fl_clear_times, _ = fault_clear_times(
                         app, device, line, fl_step, line_fault_type,
-                        prot_elements,
+                        prot_elements, clear_time_cache,
                     )
                     max_energy, max_fl, max_clear_time = worst_case_energy(
                         line, min_fl_clear_times, line_fault_type, device, False
@@ -246,7 +250,7 @@ def cond_damage(app: pft.Application, devices: List) -> None:
                 for i, line in enumerate(lines):
                     min_fl_clear_times, device_fault_type = fault_clear_times(
                         app, device, line, fl_step, line_fault_type,
-                        prot_elements,
+                        prot_elements, clear_time_cache,
                     )
 
                     # Check if SWER transformation was applied. This is
@@ -287,9 +291,9 @@ def cond_damage(app: pft.Application, devices: List) -> None:
             else:
                 line.pg_energy = total_energy[i]
 
-            # Leave the recloser at trip 1 rather than trips+1 so the
-            # assessment does not persist counter drift into the model.
-            reclose.reset_reclosing(dev_obj)
+        # Leave the recloser at trip 1 rather than trips+1 so the
+        # assessment does not persist counter drift into the model.
+        reclose.reset_reclosing(dev_obj)
 
         if incomplete_lines:
             trips_seen = sorted({
@@ -315,7 +319,8 @@ def fault_clear_times(
     line: Any,
     fl_step: int,
     fault_type: str,
-    prot_elements: Optional[Dict] = None
+    prot_elements: Optional[Dict] = None,
+    clear_time_cache: Optional[Dict] = None
 ) -> Tuple[Dict[int, Optional[float]], str]:
     """
     Calculate fault clearing times across the fault current range.
@@ -335,6 +340,10 @@ def fault_clear_times(
             repeated for every line. None means "look it up here",
             which keeps the function usable standalone; it must be
             None for fuses, which have no sub-elements.
+        clear_time_cache: Per-device cache of element clearing times
+            and instantaneous pickups, supplied by the caller so that
+            values common to every line in a section are evaluated
+            once. None creates a throwaway cache for this call.
 
     Returns:
         Tuple containing:
@@ -384,37 +393,116 @@ def fault_clear_times(
     # range() requires integers
     min_fl = int(min_fl)
     max_fl = int(max_fl)
+    if clear_time_cache is None:
+        clear_time_cache = {}
+
     if INTERVAL == "full":
         fl_interval = range(min_fl, max_fl + 1, fl_step)
     else:
         hisets = [
-            element.GetAttribute("e:cpIpset") - 1 for element in active_elements
-                  if element.GetClassName() == 'RelIoc']
+            _element_hiset(element, clear_time_cache) - 1
+            for element in active_elements
+            if element.GetClassName() == 'RelIoc'
+        ]
         fl_interval = [min_fl, max_fl] + hisets
+
+    # A hiset can coincide with min_fl or max_fl. dict.fromkeys drops
+    # the repeat while preserving first-occurrence order, so the result
+    # dict's key order is unchanged from before this cache existed -
+    # worst_case_energy resolves an exact energy tie to whichever fault
+    # level it meets first.
+    fl_interval = list(dict.fromkeys(fl_interval))
 
     # Initialise fault level:min operating time dictionary
     min_fl_clear_times = {fault_level: None for fault_level in fl_interval}
     for element in active_elements:
+        # Hoisted: the class cannot change between fault levels, and
+        # GetClassName is a PF call.
+        is_fuse = element.GetClassName() == ElementType.FUSE.value
         for fault_level in fl_interval:
-            # Calculate protection operate time for element and fl
-            if element.GetClassName() == ElementType.FUSE.value:
-                operate_time = trip_time.fuse_clear_time(element, fault_level)
-                switch_operate_time = 0
-            else:
-                element_current = current_conversion.get_measured_current(
-                    element, fault_level, fault_type)
-                operate_time = trip_time.element_trip_time(element, element_current)
-                switch_operate_time = 0.08
-            if not operate_time or operate_time <= 0:
+            clear_time = _element_clear_time(
+                element, is_fuse, fault_type, fault_level, clear_time_cache
+            )
+            if clear_time is None:
                 continue
-            clear_time = operate_time + switch_operate_time
             # If this is the minimum fault clear time for that fault level,
             # update the dictionary accordingly
             if (min_fl_clear_times[fault_level] is None
                     or clear_time < min_fl_clear_times[fault_level]):
-                min_fl_clear_times[fault_level] = round(clear_time, 3)
+                min_fl_clear_times[fault_level] = clear_time
 
     return min_fl_clear_times, fault_type
+
+
+def _element_hiset(element: Any, cache: Dict) -> float:
+    """
+    Instantaneous pickup of a RelIoc element, cached per device.
+
+    Args:
+        element: PowerFactory RelIoc object.
+        cache: Per-device cache dict, mutated in place.
+
+    Returns:
+        The e:cpIpset attribute value.
+    """
+    key = ('hiset', element)
+    if key not in cache:
+        cache[key] = element.GetAttribute("e:cpIpset")
+    return cache[key]
+
+
+def _element_clear_time(
+    element: Any,
+    is_fuse: bool,
+    fault_type: str,
+    fault_level: int,
+    cache: Dict
+) -> Optional[float]:
+    """
+    Clearing time for one element at one fault level, cached per device.
+
+    The result depends only on the element, the fault type (which sets
+    the current conversion factor) and the fault level - not on the
+    line being assessed, and not on the reclose trip: blocking changes
+    an element's outserv, not its curve or settings, and a blocked
+    element is absent from active_elements rather than evaluated.
+
+    With INTERVAL = "partial" the fault levels are the line's minimum
+    and maximum plus the device's instantaneous pickups. The pickups
+    are constant across the section, so without a cache each one is
+    re-evaluated for every line the device protects.
+
+    Args:
+        element: Protection element, or the fuse itself.
+        is_fuse: True when element is the device and a fuse.
+        fault_type: Fault type after any SWER transformation.
+        fault_level: Fault current in Amperes.
+        cache: Per-device cache dict, mutated in place.
+
+    Returns:
+        Clearing time in seconds, or None when the element does not
+        operate at this fault level.
+    """
+    key = ('clear', element, fault_type, fault_level)
+    if key in cache:
+        return cache[key]
+
+    if is_fuse:
+        operate_time = trip_time.fuse_clear_time(element, fault_level)
+        switch_operate_time = 0
+    else:
+        element_current = current_conversion.get_measured_current(
+            element, fault_level, fault_type)
+        operate_time = trip_time.element_trip_time(element, element_current)
+        switch_operate_time = 0.08
+
+    if not operate_time or operate_time <= 0:
+        result = None
+    else:
+        result = round(operate_time + switch_operate_time, 3)
+
+    cache[key] = result
+    return result
 
 
 def swer_fault_range(
