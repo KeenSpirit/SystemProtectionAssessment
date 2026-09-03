@@ -97,11 +97,18 @@ def cond_damage(app: pft.Application, devices: List) -> None:
         logger.info(
             f"Phase fault conductor damage assessment: {dev_obj.loc_name}"
         )
+        # Lines whose accumulated energy is incomplete, reported once
+        # per device rather than once per line.
+        incomplete_lines = []
         for line in lines:
             reclose.reset_reclosing(dev_obj)
             trip_count = 1
             total_energy = 0
             worst_trip_energy = 0
+            # Trips that produced no clearing time. Any entry here means
+            # total_energy is missing a contribution of unknown size, so
+            # the accumulated figure must not be reported as if complete.
+            incomplete_trips = []
 
             while trip_count <= total_trips:
                 block_service_status = reclose.set_enabled_elements(dev_obj)
@@ -125,26 +132,52 @@ def cond_damage(app: pft.Application, devices: List) -> None:
                         line.ph_clear_time = max_clear_time
                         line.ph_fl = max_fl
                 else:
-                    logging.info(
-                        f"{dev_obj.loc_name} {line_fault_type} trip "
-                        f"{trip_count} fault clearing time calculation "
-                        f"error."
-                    )
+                    # No element produced a valid operating time at any
+                    # fault level for this trip.
+                    incomplete_trips.append(trip_count)
 
                 trip_count = reclose.trip_count(dev_obj, increment=True)
 
-            line.ph_energy = total_energy
+                if incomplete_trips:
+                    # A failed trip contributes 0 to total_energy, which
+                    # would understate the accumulated let-through and could
+                    # turn a genuine FAIL into a PASS. None is honest: it
+                    # renders as NO DATA in the workbook and as unassessable
+                    # km on the dashboard.
+                    line.ph_energy = None
+                    line.ph_clear_time = None
+                    line.ph_fl = None
+                    incomplete_lines.append(
+                        (line.obj.loc_name, tuple(incomplete_trips))
+                    )
+                else:
+                    line.ph_energy = total_energy
+
+        if incomplete_lines:
+            trips_seen = sorted({
+                trip for _, trips in incomplete_lines for trip in trips
+            })
+            logger.warning(
+                f"{dev_obj.loc_name}: phase fault clearing time could not "
+                f"be calculated on trip(s) {trips_seen} for "
+                f"{len(incomplete_lines)} of {len(lines)} line(s); their "
+                f"phase energy is reported as no data rather than a "
+                f"partial total. Device has {total_trips} trip(s). Check "
+                f"whether any phase element is enabled on those trips."
+            )
 
         # Earth fault assessment
         line_fault_type = 'Phase-Ground'
         logger.info(
             f"Earth fault conductor damage assessment: {dev_obj.loc_name}"
         )
+        incomplete_lines = []
         for line in lines:
             reclose.reset_reclosing(dev_obj)
             trip_count = 1
             total_energy = 0
             worst_trip_energy = 0
+            incomplete_trips = []
             while trip_count <= total_trips:
                 block_service_status = reclose.set_enabled_elements(dev_obj)
                 try:
@@ -171,19 +204,36 @@ def cond_damage(app: pft.Application, devices: List) -> None:
                         line.pg_clear_time = max_clear_time
                         line.pg_fl = max_fl
                 else:
-                    logging.info(
-                        f"{dev_obj.loc_name} {line_fault_type} trip "
-                        f"{trip_count} fault clearing time calculation "
-                        f"error."
-                    )
+                    incomplete_trips.append(trip_count)
 
                 trip_count = reclose.trip_count(dev_obj, increment=True)
 
-            line.pg_energy = total_energy
+                if incomplete_trips:
+                    line.pg_energy = None
+                    line.pg_clear_time = None
+                    line.pg_fl = None
+                    incomplete_lines.append(
+                        (line.obj.loc_name, tuple(incomplete_trips))
+                    )
+                else:
+                    line.pg_energy = total_energy
 
-            # Leave the recloser at trip 1 rather than trips+1 so the
-            # assessment does not persist counter drift into the model.
-            reclose.reset_reclosing(dev_obj)
+                # Leave the recloser at trip 1 rather than trips+1 so the
+                # assessment does not persist counter drift into the model.
+                reclose.reset_reclosing(dev_obj)
+
+            if incomplete_lines:
+                trips_seen = sorted({
+                    trip for _, trips in incomplete_lines for trip in trips
+                })
+                logger.warning(
+                    f"{dev_obj.loc_name}: earth fault clearing time could not "
+                    f"be calculated on trip(s) {trips_seen} for "
+                    f"{len(incomplete_lines)} of {len(lines)} line(s); their "
+                    f"ground energy is reported as no data rather than a "
+                    f"partial total. Device has {total_trips} trip(s). Check "
+                    f"whether any earth element is enabled on those trips."
+                )
 
 
 # =============================================================================
