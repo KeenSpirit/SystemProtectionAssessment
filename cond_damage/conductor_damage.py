@@ -52,6 +52,48 @@ FL_STEP_AMPS = 10
 # MAIN ENTRY POINT
 # =============================================================================
 
+def _prot_elements_for_trip(
+    dev_obj: Any,
+    trip_count: int,
+    cache: Dict[int, Optional[Dict]]
+) -> Optional[Dict]:
+    """
+    Get a device's protection elements for the current trip, cached.
+
+    get_prot_elements performs four recursive GetContents walks and
+    filters on out-of-service state, so its result depends on which
+    elements reclose.set_enabled_elements has blocked for this trip -
+    but not on which line is being assessed. Previously it ran once per
+    line per trip per fault type; the same walk repeated for every line
+    in a section.
+
+    The cache is per device and keyed on trip number only. Both the
+    phase and earth passes reach a given trip through the same
+    reset_reclosing / set_enabled_elements sequence, so trip N presents
+    the same device state in either pass and the entry is shared.
+
+    Callers must invoke this only while the trip's element state is
+    applied - that is, after set_enabled_elements and before
+    reset_block_service_status.
+
+    Args:
+        dev_obj: PowerFactory relay or fuse object.
+        trip_count: Current trip number in the reclose sequence.
+        cache: Per-device dict, mutated in place.
+
+    Returns:
+        The element dict from get_prot_elements, or None for fuses,
+        which carry no sub-elements and are handled directly by
+        fault_clear_times.
+    """
+    if dev_obj.GetClassName() == ElementType.FUSE.value:
+        return None
+
+    if trip_count not in cache:
+        cache[trip_count] = elements.get_prot_elements(dev_obj)
+    return cache[trip_count]
+
+
 def cond_damage(app: pft.Application, devices: List) -> None:
     """
     Perform conductor damage assessment for selected protection devices.
@@ -91,6 +133,10 @@ def cond_damage(app: pft.Application, devices: List) -> None:
         dev_obj = device.obj
         lines = device.sect_lines
         total_trips = reclose.get_device_trips(dev_obj)
+        # Protection elements per trip, reused across every line in
+        # this device's section and across both fault passes. Scoped to
+        # the device so a new device never sees another's elements.
+        element_cache = {}
 
         # Phase fault assessment
         line_fault_type = '2-Phase'
@@ -114,7 +160,10 @@ def cond_damage(app: pft.Application, devices: List) -> None:
                 block_service_status = reclose.set_enabled_elements(dev_obj)
                 try:
                     min_fl_clear_times, _ = fault_clear_times(
-                        app, device, line, fl_step, line_fault_type
+                        app, device, line, fl_step, line_fault_type,
+                        _prot_elements_for_trip(
+                            dev_obj, trip_count, element_cache
+                        ),
                     )
                     max_energy, max_fl, max_clear_time = worst_case_energy(
                         line, min_fl_clear_times, line_fault_type, device, False
@@ -138,20 +187,20 @@ def cond_damage(app: pft.Application, devices: List) -> None:
 
                 trip_count = reclose.trip_count(dev_obj, increment=True)
 
-                if incomplete_trips:
-                    # A failed trip contributes 0 to total_energy, which
-                    # would understate the accumulated let-through and could
-                    # turn a genuine FAIL into a PASS. None is honest: it
-                    # renders as NO DATA in the workbook and as unassessable
-                    # km on the dashboard.
-                    line.ph_energy = None
-                    line.ph_clear_time = None
-                    line.ph_fl = None
-                    incomplete_lines.append(
-                        (line.obj.loc_name, tuple(incomplete_trips))
-                    )
-                else:
-                    line.ph_energy = total_energy
+            if incomplete_trips:
+                # A failed trip contributes 0 to total_energy, which
+                # would understate the accumulated let-through and could
+                # turn a genuine FAIL into a PASS. None is honest: it
+                # renders as NO DATA in the workbook and as unassessable
+                # km on the dashboard.
+                line.ph_energy = None
+                line.ph_clear_time = None
+                line.ph_fl = None
+                incomplete_lines.append(
+                    (line.obj.loc_name, tuple(incomplete_trips))
+                )
+            else:
+                line.ph_energy = total_energy
 
         if incomplete_lines:
             trips_seen = sorted({
@@ -182,7 +231,10 @@ def cond_damage(app: pft.Application, devices: List) -> None:
                 block_service_status = reclose.set_enabled_elements(dev_obj)
                 try:
                     min_fl_clear_times, device_fault_type = fault_clear_times(
-                        app, device, line, fl_step, line_fault_type
+                        app, device, line, fl_step, line_fault_type,
+                        _prot_elements_for_trip(
+                            dev_obj, trip_count, element_cache
+                        ),
                     )
 
                     # Check if SWER transformation was applied
@@ -208,32 +260,32 @@ def cond_damage(app: pft.Application, devices: List) -> None:
 
                 trip_count = reclose.trip_count(dev_obj, increment=True)
 
-                if incomplete_trips:
-                    line.pg_energy = None
-                    line.pg_clear_time = None
-                    line.pg_fl = None
-                    incomplete_lines.append(
-                        (line.obj.loc_name, tuple(incomplete_trips))
-                    )
-                else:
-                    line.pg_energy = total_energy
-
-                # Leave the recloser at trip 1 rather than trips+1 so the
-                # assessment does not persist counter drift into the model.
-                reclose.reset_reclosing(dev_obj)
-
-            if incomplete_lines:
-                trips_seen = sorted({
-                    trip for _, trips in incomplete_lines for trip in trips
-                })
-                logger.warning(
-                    f"{dev_obj.loc_name}: earth fault clearing time could not "
-                    f"be calculated on trip(s) {trips_seen} for "
-                    f"{len(incomplete_lines)} of {len(lines)} line(s); their "
-                    f"ground energy is reported as no data rather than a "
-                    f"partial total. Device has {total_trips} trip(s). Check "
-                    f"whether any earth element is enabled on those trips."
+            if incomplete_trips:
+                line.pg_energy = None
+                line.pg_clear_time = None
+                line.pg_fl = None
+                incomplete_lines.append(
+                    (line.obj.loc_name, tuple(incomplete_trips))
                 )
+            else:
+                line.pg_energy = total_energy
+
+            # Leave the recloser at trip 1 rather than trips+1 so the
+            # assessment does not persist counter drift into the model.
+            reclose.reset_reclosing(dev_obj)
+
+        if incomplete_lines:
+            trips_seen = sorted({
+                trip for _, trips in incomplete_lines for trip in trips
+            })
+            logger.warning(
+                f"{dev_obj.loc_name}: earth fault clearing time could not "
+                f"be calculated on trip(s) {trips_seen} for "
+                f"{len(incomplete_lines)} of {len(lines)} line(s); their "
+                f"ground energy is reported as no data rather than a "
+                f"partial total. Device has {total_trips} trip(s). Check "
+                f"whether any earth element is enabled on those trips."
+            )
 
 
 # =============================================================================
@@ -245,7 +297,8 @@ def fault_clear_times(
     device: Any,
     line: Any,
     fl_step: int,
-    fault_type: str
+    fault_type: str,
+    prot_elements: Optional[Dict] = None
 ) -> Tuple[Dict[int, Optional[float]], str]:
     """
     Calculate fault clearing times across the fault current range.
@@ -260,6 +313,11 @@ def fault_clear_times(
         line: Line dataclass with fault current data.
         fl_step: Fault level step size in Amperes.
         fault_type: '2-Phase', '3-Phase', or 'Phase-Ground'.
+        prot_elements: Element dict from get_prot_elements for the
+            current trip, supplied by the caller so the walk is not
+            repeated for every line. None means "look it up here",
+            which keeps the function usable standalone; it must be
+            None for fuses, which have no sub-elements.
 
     Returns:
         Tuple containing:
@@ -295,8 +353,14 @@ def fault_clear_times(
     if device_obj.GetClassName() == ElementType.FUSE.value:
         active_elements = [device_obj]
     else:
-        all_elements = elements.get_prot_elements(device_obj)
-        active_elements = elements.get_active_elements(all_elements, fault_type)
+        if prot_elements is None:
+            prot_elements = elements.get_prot_elements(device_obj)
+        # get_active_elements is a list concatenation and depends on
+        # fault_type, which swer_fault_range may have changed above -
+        # so it stays per call, unlike the walk that produced its input.
+        active_elements = elements.get_active_elements(
+            prot_elements, fault_type
+        )
 
     # Create a list of fault levels in the interval of min and max fault
     # currents.
