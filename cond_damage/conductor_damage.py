@@ -146,61 +146,71 @@ def cond_damage(app: pft.Application, devices: List) -> None:
         # Lines whose accumulated energy is incomplete, reported once
         # per device rather than once per line.
         incomplete_lines = []
-        for line in lines:
-            reclose.reset_reclosing(dev_obj)
-            trip_count = 1
-            total_energy = 0
-            worst_trip_energy = 0
-            # Trips that produced no clearing time. Any entry here means
-            # total_energy is missing a contribution of unknown size, so
-            # the accumulated figure must not be reported as if complete.
-            incomplete_trips = []
+        # Trips outer, lines inner. set_enabled_elements and
+        # reset_block_service_status write outserv on every blockable
+        # element of the relay; run per line they cost lines x trips
+        # round trips per fault type, when the enabled-element state for
+        # a given trip is the same for every line in the section. The
+        # arithmetic is unchanged - only the order in which it runs.
+        reclose.reset_reclosing(dev_obj)
+        trip_count = 1
+        # Per-line accumulators, indexed in step with `lines`.
+        total_energy = [0] * len(lines)
+        worst_trip_energy = [0] * len(lines)
+        # Trips that produced no clearing time, per line. Any entry
+        # means that line's total is missing a contribution of unknown
+        # size and must not be reported as if complete.
+        incomplete_trips = [[] for _ in lines]
 
-            while trip_count <= total_trips:
-                block_service_status = reclose.set_enabled_elements(dev_obj)
-                try:
+        while trip_count <= total_trips:
+            block_service_status = reclose.set_enabled_elements(dev_obj)
+            try:
+                prot_elements = _prot_elements_for_trip(
+                    dev_obj, trip_count, element_cache
+                )
+                for i, line in enumerate(lines):
                     min_fl_clear_times, _ = fault_clear_times(
                         app, device, line, fl_step, line_fault_type,
-                        _prot_elements_for_trip(
-                            dev_obj, trip_count, element_cache
-                        ),
+                        prot_elements,
                     )
                     max_energy, max_fl, max_clear_time = worst_case_energy(
                         line, min_fl_clear_times, line_fault_type, device, False
                     )
-                finally:
-                    reclose.reset_block_service_status(block_service_status)
-                total_energy += max_energy
+                    total_energy[i] += max_energy
 
-                if max_clear_time is not None:
-                    # Record the fl / clear time of the trip contributing
-                    # the most energy, matching the "worst case energy"
-                    # column labels in the results output.
-                    if max_energy > worst_trip_energy:
-                        worst_trip_energy = max_energy
-                        line.ph_clear_time = max_clear_time
-                        line.ph_fl = max_fl
-                else:
-                    # No element produced a valid operating time at any
-                    # fault level for this trip.
-                    incomplete_trips.append(trip_count)
+                    if max_clear_time is not None:
+                        # Record the fl / clear time of the trip
+                        # contributing the most energy, matching the
+                        # "worst case energy" column labels in the
+                        # results output.
+                        if max_energy > worst_trip_energy[i]:
+                            worst_trip_energy[i] = max_energy
+                            line.ph_clear_time = max_clear_time
+                            line.ph_fl = max_fl
+                    else:
+                        # No element produced a valid operating time at
+                        # any fault level for this trip.
+                        incomplete_trips[i].append(trip_count)
+            finally:
+                reclose.reset_block_service_status(block_service_status)
 
-                trip_count = reclose.trip_count(dev_obj, increment=True)
+            trip_count = reclose.trip_count(dev_obj, increment=True)
 
-            if incomplete_trips:
-                # A failed trip contributes 0 to total_energy, which
-                # would understate the accumulated let-through and could
-                # turn a genuine FAIL into a PASS. None is honest: it
-                # renders as NO DATA in the workbook and as unassessable
-                # km on the dashboard.
+        for i, line in enumerate(lines):
+            if incomplete_trips[i]:
+                # A failed trip contributes 0 to that line's total,
+                # which would understate the accumulated let-through and
+                # could turn a genuine FAIL into a PASS. None is honest:
+                # it renders as NO DATA in the workbook and as
+                # unassessable km on the dashboard.
                 line.ph_energy = None
                 line.ph_clear_time = None
                 line.ph_fl = None
                 incomplete_lines.append(
-                    (line.obj.loc_name, tuple(incomplete_trips))
+                    (line.obj.loc_name, tuple(incomplete_trips[i]))
                 )
             else:
-                line.ph_energy = total_energy
+                line.ph_energy = total_energy[i]
 
         if incomplete_lines:
             trips_seen = sorted({
@@ -221,54 +231,61 @@ def cond_damage(app: pft.Application, devices: List) -> None:
             f"Earth fault conductor damage assessment: {dev_obj.loc_name}"
         )
         incomplete_lines = []
-        for line in lines:
-            reclose.reset_reclosing(dev_obj)
-            trip_count = 1
-            total_energy = 0
-            worst_trip_energy = 0
-            incomplete_trips = []
-            while trip_count <= total_trips:
-                block_service_status = reclose.set_enabled_elements(dev_obj)
-                try:
+        reclose.reset_reclosing(dev_obj)
+        trip_count = 1
+        total_energy = [0] * len(lines)
+        worst_trip_energy = [0] * len(lines)
+        incomplete_trips = [[] for _ in lines]
+
+        while trip_count <= total_trips:
+            block_service_status = reclose.set_enabled_elements(dev_obj)
+            try:
+                prot_elements = _prot_elements_for_trip(
+                    dev_obj, trip_count, element_cache
+                )
+                for i, line in enumerate(lines):
                     min_fl_clear_times, device_fault_type = fault_clear_times(
                         app, device, line, fl_step, line_fault_type,
-                        _prot_elements_for_trip(
-                            dev_obj, trip_count, element_cache
-                        ),
+                        prot_elements,
                     )
 
-                    # Check if SWER transformation was applied
+                    # Check if SWER transformation was applied. This is
+                    # per line, not per trip - swer_fault_range decides
+                    # it from the line's own type and phase count.
                     transposition = (line_fault_type != device_fault_type)
 
                     max_energy, max_fl, max_clear_time = worst_case_energy(
-                        line, min_fl_clear_times, line_fault_type, device, transposition
+                        line, min_fl_clear_times, line_fault_type, device,
+                        transposition
                     )
-                finally:
-                    reclose.reset_block_service_status(block_service_status)
-                total_energy += max_energy
+                    total_energy[i] += max_energy
 
-                if max_clear_time is not None:
-                    # Record the fl / clear time of the trip contributing
-                    # the most energy, matching the "worst case energy"
-                    # column labels in the results output.
-                    if max_energy > worst_trip_energy:
-                        worst_trip_energy = max_energy
-                        line.pg_clear_time = max_clear_time
-                        line.pg_fl = max_fl
-                else:
-                    incomplete_trips.append(trip_count)
+                    if max_clear_time is not None:
+                        # Record the fl / clear time of the trip
+                        # contributing the most energy, matching the
+                        # "worst case energy" column labels in the
+                        # results output.
+                        if max_energy > worst_trip_energy[i]:
+                            worst_trip_energy[i] = max_energy
+                            line.pg_clear_time = max_clear_time
+                            line.pg_fl = max_fl
+                    else:
+                        incomplete_trips[i].append(trip_count)
+            finally:
+                reclose.reset_block_service_status(block_service_status)
 
-                trip_count = reclose.trip_count(dev_obj, increment=True)
+            trip_count = reclose.trip_count(dev_obj, increment=True)
 
-            if incomplete_trips:
+        for i, line in enumerate(lines):
+            if incomplete_trips[i]:
                 line.pg_energy = None
                 line.pg_clear_time = None
                 line.pg_fl = None
                 incomplete_lines.append(
-                    (line.obj.loc_name, tuple(incomplete_trips))
+                    (line.obj.loc_name, tuple(incomplete_trips[i]))
                 )
             else:
-                line.pg_energy = total_energy
+                line.pg_energy = total_energy[i]
 
             # Leave the recloser at trip 1 rather than trips+1 so the
             # assessment does not persist counter drift into the model.
