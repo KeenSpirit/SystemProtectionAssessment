@@ -297,10 +297,11 @@ def obtain_region(app: pft.Application) -> str:
     derived_proj = project.der_baseproject
     der_proj_name = derived_proj.GetFullName()
 
-    if 'Northern' in der_proj_name:
-        return 'Northern'
-    elif 'Southern' in der_proj_name:
-        return 'Southern'
+    if 'Regional Models' in der_proj_name:
+        if 'Northern' in der_proj_name:
+            return 'Northern'
+        elif 'Southern' in der_proj_name:
+            return 'Southern'
 
     if 'SEQ' in der_proj_name:
         return 'SEQ'

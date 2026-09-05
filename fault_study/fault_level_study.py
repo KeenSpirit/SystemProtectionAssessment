@@ -86,44 +86,58 @@ def fault_study(
     study_configs = [('Max', 'Ground'), ('Min', 'Ground')]
     sn_study_configs = [('Min', 'Ground')]
 
-    # Set all LV terminals OOS to speed up all-terminal short-circuit calculation
+    # Regional models: take in-service LV terminals out of service for
+    # the all-terminal short circuit, which otherwise spends most of
+    # its time on the LV side. Only terminals that were in service are
+    # touched, so the restore below returns exactly those and leaves
+    # anything already out of service alone. The try/finally is the
+    # invariant: a study that raises must not leave LV out of service
+    # in the model.
+    lv_terminals = []
     if region in ["Northern", "Southern"]:
-        terminals = [t for t in app.GetCalcRelevantObjects("*.ElmTerm") if t.GetAttribute("uknom") < 1]
-        for term in terminals:
+        lv_terminals = [
+            t for t in app.GetCalcRelevantObjects("*.ElmTerm")
+            if t.GetAttribute("uknom") < 1
+            if not t.GetAttribute("outserv")
+        ]
+        for term in lv_terminals:
             term.SetAttribute("outserv", 1)
+        logger.info(
+            f"{len(lv_terminals)} LV terminal(s) taken out of service "
+            f"for the short circuit studies"
+        )
 
-    # Execute main fault studies
-    for bound, fault_type in study_configs:
-        app.PrintPlain(f"performing short circuit for {bound}")
-        analysis.short_circuit(app, bound, fault_type, consider_prot='None')
-        app.PrintPlain(f"Finished short circuit for {bound}")
-        for feeder in feeders:
-            terminal_z(feeder.devices, bound=bound, f_type=fault_type)
+    try:
+        # Execute main fault studies
+        for bound, fault_type in study_configs:
+            app.PrintPlain(f"performing short circuit for {bound}")
+            analysis.short_circuit(app, bound, fault_type, consider_prot='None')
+            app.PrintPlain(f"Finished short circuit for {bound}")
+            for feeder in feeders:
+                terminal_z(feeder.devices, bound=bound, f_type=fault_type)
 
-    # Handle system normal minimum studies
-    if grid_equivalence_check(external_grid):
-        for feeder in feeders:
-            copy_min_zs(feeder.devices)
-    else:
-        # Grid impedances are mutated for the SN-min studies; the
-        # finally guarantees restoration even if a study raises, so
-        # an aborted feeder cannot leave the model with system-normal
-        # source impedances.
-        reset_min_source_imp(external_grid, sys_norm_min=True)
-        try:
-            for bound, fault_type in sn_study_configs:
-                app.PrintPlain(f"performing short circuit for SN_Min")
-                analysis.short_circuit(app, bound, fault_type, consider_prot='None')
-                app.PrintPlain(f"Finished short circuit for SN_Min")
-                for feeder in feeders:
-                    terminal_z(feeder.devices, bound='SN_Min', f_type=fault_type)
-        finally:
-            reset_min_source_imp(external_grid, sys_norm_min=False)
-            analysis.reset_sc_command(app)
-
-    # Restore all Lv terminations to original state
-    if region in ['Northern', 'Southern'] and terminals:
-        for term in terminals:
+        # Handle system normal minimum studies
+        if grid_equivalence_check(external_grid):
+            for feeder in feeders:
+                copy_min_zs(feeder.devices)
+        else:
+            # Grid impedances are mutated for the SN-min studies; the
+            # finally guarantees restoration even if a study raises, so
+            # an aborted feeder cannot leave the model with system-normal
+            # source impedances.
+            reset_min_source_imp(external_grid, sys_norm_min=True)
+            try:
+                for bound, fault_type in sn_study_configs:
+                    app.PrintPlain(f"performing short circuit for SN_Min")
+                    analysis.short_circuit(app, bound, fault_type, consider_prot='None')
+                    app.PrintPlain(f"Finished short circuit for SN_Min")
+                    for feeder in feeders:
+                        terminal_z(feeder.devices, bound='SN_Min', f_type=fault_type)
+            finally:
+                reset_min_source_imp(external_grid, sys_norm_min=False)
+                analysis.reset_sc_command(app)
+    finally:
+        for term in lv_terminals:
             term.SetAttribute("outserv", 0)
 
     for feeder in feeders:
