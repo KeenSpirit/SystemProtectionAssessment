@@ -279,16 +279,12 @@ def obtain_region(app: pft.Application) -> str:
     Returns:
         Region identifier string:
             - 'SEQ' for South East Queensland models
-            - 'Regional Models' for regional network models
+            - 'Northern' for Northern network models
+            - 'Southern' for Southern network models
 
     Raises:
         RuntimeError: If the region cannot be determined from the
             project path.
-
-    Note:
-        Region detection is based on path string matching:
-            - Path containing 'Regional Models' -> 'Regional Models'
-            - Path containing 'SEQ' -> 'SEQ'
 
     Example:
         >>> region = obtain_region(app)
@@ -301,8 +297,10 @@ def obtain_region(app: pft.Application) -> str:
     derived_proj = project.der_baseproject
     der_proj_name = derived_proj.GetFullName()
 
-    if 'Regional Models' in der_proj_name:
-        return 'Regional Models'
+    if 'Northern' in der_proj_name:
+        return 'Northern'
+    elif 'Southern' in der_proj_name:
+        return 'Southern'
 
     if 'SEQ' in der_proj_name:
         return 'SEQ'

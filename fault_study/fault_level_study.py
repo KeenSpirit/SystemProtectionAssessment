@@ -59,7 +59,7 @@ def fault_study(
     Args:
         app: PowerFactory application instance.
         external_grid: Dictionary of external grid objects and parameters.
-        region: Network region ('SEQ' or 'Regional Models').
+        region: Network region ('SEQ', "Northern', 'Southern').
         feeders: List of feeder dataclasses to analyze.
         study_selections: List of selected study types.
 
@@ -80,14 +80,14 @@ def fault_study(
         get_downstream_objects(app, region, feeder.devices)
         us_ds_device(feeder.devices, feeder.bu_devices)
         get_ds_capacity(feeder.devices)
-        get_device_sections(app, feeder.devices)
+        get_device_sections(app, region, feeder.devices)
 
     # Define study configurations
     study_configs = [('Max', 'Ground'), ('Min', 'Ground')]
     sn_study_configs = [('Min', 'Ground')]
 
     # Set all LV terminals OOS to speed up all-terminal short-circuit calculation
-    if region == "Regional Models":
+    if region in ["Northern", "Southern"]:
         terminals = [t for t in app.GetCalcRelevantObjects("*.ElmTerm") if t.GetAttribute("uknom") < 1]
         for term in terminals:
             term.SetAttribute("outserv", 1)
@@ -122,7 +122,7 @@ def fault_study(
             analysis.reset_sc_command(app)
 
     # Restore all Lv terminations to original state
-    if region == "Regional Models" and terminals:
+    if region in ['Northern', 'Southern'] and terminals:
         for term in terminals:
             term.SetAttribute("outserv", 0)
 
@@ -154,7 +154,7 @@ def get_downstream_objects(
 
     Args:
         app: PowerFactory application instance.
-        region: Network region ('SEQ' or 'Regional Models').
+        region: Network region ('SEQ', 'Northern', 'Southern').
         devices: List of Device dataclasses to populate.
 
     Side Effects:
@@ -188,7 +188,7 @@ def get_downstream_objects(
                 terminals.append(obj)
             if class_name == ast.ElementType.LOAD.value and region == 'SEQ':
                 loads.append(obj)
-            if class_name == ast.ElementType.TFMR.value and region == 'Regional Models':
+            if class_name == ast.ElementType.TFMR.value and region in ['Northern', 'Southern']:
                 load_type = obj.typ_id
                 if "Regulators" not in load_type.GetFullName():
                     loads.append(obj)
@@ -266,7 +266,11 @@ def get_ds_capacity(devices: List[ast.Device]) -> None:
         )
 
 
-def get_device_sections(app: pft.Application, devices: List[ast.Device]) -> None:
+def get_device_sections(
+    app: pft.Application,
+    region: str,
+    devices: List[ast.Device]
+) -> None:
     """
     Partition network into protection sections for each device.
 
@@ -275,6 +279,9 @@ def get_device_sections(app: pft.Application, devices: List[ast.Device]) -> None
 
     Args:
         app: PowerFactory application instance.
+        region: Network region ('SEQ', 'Northern', 'Southern'). Needed
+            because the two fleets store line length in different
+            units - see assets.line.DLINE_TO_KM.
         devices: List of Device dataclasses with downstream objects.
 
     Side Effects:
@@ -336,7 +343,7 @@ def get_device_sections(app: pft.Application, devices: List[ast.Device]) -> None
         section_lines = sectioned_lines[device.term]
         dataclass_lines = [
             ast.initialise_line_dataclass(
-                elmlne, oh_lines=oh_lines_set
+                elmlne, region, oh_lines=oh_lines_set
             )
             for elmlne in section_lines
         ]

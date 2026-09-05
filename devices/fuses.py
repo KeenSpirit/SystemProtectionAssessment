@@ -191,7 +191,7 @@ def get_fuse_element(
             else:
                 fuse_string = _safe_string(fm.ex_rmu_oil_fuses, tfmr.load_kva)
             fuse_types = f_types(app, 1)
-    else:    # region == 'Regional Models':
+    else:    # region == 'Southern' or 'Northern':
         fuse_types = f_types(app, 0)
         term_volts = round(term.l_l_volts, 2)
         if term.constr == ast.ConstructionType.SWER.value:

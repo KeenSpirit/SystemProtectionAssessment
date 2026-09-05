@@ -89,7 +89,8 @@ logger = logging.getLogger(__name__)
 
 PRIMARY_RF_THRESHOLD = {
     'SEQ': 2.0,
-    'Regional Models': 1.7,
+    'Northern': 1.7,
+    'Southern': 1.7,
 }
 BACKUP_RF_THRESHOLD = 1.3
 SN_BACKUP_RF_THRESHOLD = 1.5
@@ -110,28 +111,6 @@ _TIERS = {
 COVERED = 'COVERED'
 EXCEPTION = 'EXCEPTION'
 UNASSESSABLE = 'UNASSESSABLE'
-
-
-# ---------------------------------------------------------------------
-# Region assignment
-# ---------------------------------------------------------------------
-
-def determine_region(feeder_name: str) -> str:
-    """
-    Determine the dashboard region for a feeder.
-
-    PLACEHOLDER - to be replaced with the production implementation.
-    Distinct from the pipeline region ('SEQ' / 'Regional Models'),
-    which selects fault impedance and thresholds; this one drives the
-    per-region grouping in the dashboard.
-
-    Args:
-        feeder_name: Feeder name as it appears in the model.
-
-    Returns:
-        Region label for dashboard grouping.
-    """
-    return 'UNASSIGNED'
 
 
 # ---------------------------------------------------------------------
@@ -381,7 +360,10 @@ def build_dashboard_facts(
 
     for feeder in feeders:
         feeder_name = str(feeder.obj.loc_name)
-        region = determine_region(feeder_name)
+        # The pipeline region is the dashboard region. Every feeder in
+        # a project shares it, since obtain_region derives it from the
+        # project's base path.
+        region = pipeline_region
 
         for device in feeder.devices:
             device_name = str(device.obj.loc_name)

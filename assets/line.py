@@ -9,6 +9,9 @@ from dataclasses import dataclass
 from typing import Optional, Dict,Union, TYPE_CHECKING
 
 import assets.utils as utils
+import logging
+
+logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from pf_config import pft
@@ -102,6 +105,7 @@ class Line:
 
 def initialise_line_dataclass(
     elmlne: "pft.ElmLne",
+    region: str,
     oh_lines: Optional[set] = None,
 ) -> Optional[Line]:
     """
@@ -112,6 +116,8 @@ def initialise_line_dataclass(
 
     Args:
         elmlne: The PowerFactory ElmLne object
+        region: Network region ('SEQ', 'Northern', 'Southern'), used to
+            resolve the dline length units.
 
     Returns:
         Initialized Line dataclass, or None if elmlne is None.
@@ -138,7 +144,7 @@ def initialise_line_dataclass(
         l_l_volts=_get_voltage(elmlne),
         line_type=line_type,
         thermal_rating=thermal_rating,
-        length=_get_length(elmlne),
+        length=_get_length(elmlne, region),
         constr=determine_line_const(elmlne),
     )
 
@@ -190,19 +196,54 @@ def is_overhead(line: Line) -> bool:
     return line.constr in ("OH", "SWER")
 
 
-def _get_length(line: "pft.ElmLne") -> Optional[float]:
+DLINE_TO_KM = {
+    'SEQ': 0.001,
+    'Northern': 1.0,
+    'Southern': 1.0,
+}
+
+# Regions with no unit convention, warned about once each. Without this
+# the message would repeat for every line in the project
+_UNKNOWN_REGION_WARNED: set = set()
+
+
+def _get_length(line: "pft.ElmLne", region: str) -> Optional[float]:
     """
     Read a line's circuit length in km.
 
+    An unrecognised region yields None rather than raising: a missing
+    unit convention should cost the length metrics, not the conductor
+    damage and coordination assessment for the whole project. None
+    propagates as an unreadable length, which the fact layer counts in
+    oh_lines_no_length and excludes from every km total, so the
+    affected project's km figures come out blank rather than wrong.
+
     Args:
         line: PowerFactory ElmLne object.
+        region: 'SEQ' or 'Regional Models', from
+            pf_protection_helper.obtain_region.
 
     Returns:
-        Length in km, or None if the attribute is missing or
-        non-numeric.
+        Length in km, or None if the region has no unit convention or
+        the attribute is missing or non-numeric.
     """
+    scale = DLINE_TO_KM.get(region)
+    if scale is None:
+        if region not in _UNKNOWN_REGION_WARNED:
+            _UNKNOWN_REGION_WARNED.add(region)
+            logger.error(
+                "No dline unit convention is defined for region %r "
+                "(known: %s). Line lengths are unavailable for this "
+                "project, so every km-based dashboard metric will be "
+                "empty. Add the region's convention to DLINE_TO_KM in "
+                "assets/line.py - do not assume one, as the two fleets "
+                "differ by a factor of a thousand.",
+                region, sorted(DLINE_TO_KM),
+            )
+        return None
+
     try:
-        return float(line.GetAttribute("dline"))
+        return float(line.GetAttribute("dline")) * scale
     except (AttributeError, TypeError, ValueError):
         return None
 

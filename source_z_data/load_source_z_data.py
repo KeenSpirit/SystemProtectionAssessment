@@ -105,9 +105,9 @@ def grid_data_import(
 
     Args:
         region: Network region string, as returned by
-            ``pf_protection_helper.obtain_region``. 'Regional Models'
-            selects the Ergon fault level report; anything else
-            (i.e. 'SEQ') selects the Energex grid results workbook.
+            ``pf_protection_helper.obtain_region``. 'SEQ'
+            selects the SEQ fault level report; anything else
+            (i.e. 'Northern') selects the Regional grid results workbook.
         source_dir: Optional override for the ``Source Impedances``
             folder. Defaults to the folder beside this module. Provided
             for testing and for pointing a run at an alternate study.
@@ -120,16 +120,16 @@ def grid_data_import(
     """
     directory = Path(source_dir) if source_dir else _default_source_dir()
 
-    if region == 'Regional Models':
-        workbook = _resolve_workbook(
-            directory, REGIONAL_WORKBOOK, REGIONAL_WORKBOOK_GLOB
-        )
-        builder = _build_regional
-    else:
+    if region == 'SEQ':
         workbook = _resolve_workbook(
             directory, SEQ_WORKBOOK, SEQ_WORKBOOK_GLOB
         )
         builder = _build_seq
+    else:
+        workbook = _resolve_workbook(
+            directory, REGIONAL_WORKBOOK, REGIONAL_WORKBOOK_GLOB
+        )
+        builder = _build_regional
 
     if workbook is None:
         return {}

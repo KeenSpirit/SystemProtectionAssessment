@@ -118,7 +118,7 @@ def get_terminal_pg_fault(region: str,
     - Study type: Normal minimum vs System Normal minimum
 
     Args:
-        region: Network region identifier ('SEQ' or 'Regional Models')
+        region: Network region identifier ('SEQ', 'Northern', 'Southern')
         term: Termination dataclass with fault current attributes
         system_normal: If True, returns system normal minimum values.
                        If False (default), returns minimum values.

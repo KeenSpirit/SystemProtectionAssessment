@@ -79,7 +79,7 @@ def _element_min_fl_pg(
     PG levels through the same function - so the two paths agree.
 
     Args:
-        region: Network region ('SEQ' or 'Regional Models').
+        region: Network region ('SEQ', 'Northern', 'Southern').
         element: Termination or Line dataclass.
         fault_impedance: Fault impedance module reference.
         system_normal: Read system normal minima instead of minima.
@@ -124,7 +124,7 @@ def device_reach_factors(
     earth, and negative sequence protection functions.
 
     Args:
-        region: Network region ('SEQ' or 'Regional Models').
+        region: Network region ('SEQ', 'Northern', 'Southern').
         device: Protection device dataclass.
         elements: List of Termination or Line dataclasses to evaluate
             reach to.
@@ -273,7 +273,7 @@ def populate_reach_factors(region: str, devices: List["Device"]) -> None:
     rendering misaligned rows.
 
     Args:
-        region: Network region ('SEQ' or 'Regional Models').
+        region: Network region ('SEQ', 'Northern', 'Southern').
         devices: Devices with sect_terms populated - that is, after the
             fault study has completed for this feeder.
 
@@ -306,7 +306,7 @@ def populate_line_reach_factors(region: str, devices: List["Device"]) -> None:
     two stages run in.
 
     Args:
-        region: Network region ('SEQ' or 'Regional Models').
+        region: Network region ('SEQ', 'Northern', 'Southern').
         devices: Devices with sect_lines populated and line fault
             levels set.
 
