@@ -182,6 +182,7 @@ def get_downstream_objects(
     all_grids = app.GetCalcRelevantObjects('*.ElmXnet')
     grids = [grid for grid in all_grids if grid.outserv == 0]
 
+    untyped_warned = set()
     for device in devices:
         terminals = [device.term]
         loads = []
@@ -204,6 +205,16 @@ def get_downstream_objects(
                 loads.append(obj)
             if class_name == ast.ElementType.TFMR.value and region in ['Northern', 'Southern']:
                 load_type = obj.typ_id
+                if load_type is None:
+                    # Untyped transformer: Exclude it from the
+                    # section loads. Its terminal is still collected above.
+                    if obj not in untyped_warned:
+                        untyped_warned.add(obj)
+                        logger.warning(
+                            f"Untyped transformer {obj.GetFullName()} "
+                            f"excluded from downstream loads"
+                        )
+                    continue
                 if "Regulators" not in load_type.GetFullName():
                     loads.append(obj)
             if class_name == ast.ElementType.LINE.value:
@@ -674,19 +685,29 @@ def update_device_data(region: str, devices: List[ast.Device]) -> None:
         except IndexError:
             max_ds_tr = ast.initialise_load_dataclass(None)
 
-        # Find transformer with highest fault level
-        max_fl_pg = 0
+        # Find transformer with highest fault level. A terminal with no
+        # maximum result (max_fl_pg is None) is skipped. If
+        # every candidate lacks a result, max_ds_tr stays as initialised
+        # above with its fault fields unset, the same state as the
+        # no-transformer case.
+        max_fl_pg = None
         for tr in max_ds_trs:
             term_dataclass = [
                 t for t in device.sect_terms if t.obj == tr.term
             ][0]
-            if term_dataclass.max_fl_pg >= max_fl_pg:
-                max_fl_pg = term_dataclass.max_fl_pg
+            fl_pg = term_dataclass.max_fl_pg
+            if fl_pg is None:
+                continue
+            if max_fl_pg is None or fl_pg >= max_fl_pg:
+                max_fl_pg = fl_pg
                 tr.term = term_dataclass.obj
-                tr.max_pg = term_dataclass.max_fl_pg
-                tr.max_ph = max(
-                    term_dataclass.max_fl_3ph, term_dataclass.max_fl_2ph
-                )
+                tr.max_pg = fl_pg
+                ph_values = [
+                    v for v in (term_dataclass.max_fl_3ph,
+                                term_dataclass.max_fl_2ph)
+                    if v is not None
+                ]
+                tr.max_ph = max(ph_values) if ph_values else None
                 max_ds_tr = tr
         device.max_ds_tr = max_ds_tr
 
