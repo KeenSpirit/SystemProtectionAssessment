@@ -89,6 +89,8 @@ def initialise_load_dataclass(
     class_name = load.GetClassName()
 
     if class_name == ElementType.LOAD.value:
+        if load.bus1 is None:
+            return Tfmr()
         return Tfmr(
             obj=load,
             term=load.bus1.cterm,
@@ -96,6 +98,8 @@ def initialise_load_dataclass(
         )
 
     if class_name == ElementType.TFMR.value:
+        if load.bushv is None:
+            return Tfmr()
         return Tfmr(
             obj=load,
             term=load.bushv.cterm,

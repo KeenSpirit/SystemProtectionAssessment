@@ -183,17 +183,24 @@ def set_enabled_elements(
     trip_number = recloser.starttimeframe
     list_index = 0 if trip_number <= 1 else trip_number - 1
 
-    # Save original status and apply new status
-    block_service_status = {}
-    for block, block_logic_list in reclose_blocks.items():
-        block_service_status[block] = block.GetAttribute('outserv')
-
-        # Check if element should be enabled for this trip
-        block_state = block_logic_list[list_index]
-        if block_state in [1.0, 2.0]:
-            block.SetAttribute('outserv', 0)  # Enable
-        else:
-            block.SetAttribute('outserv', 1)  # Disable
+    # Save every original status before changing any, so a failure part
+    # way through (e.g. a trip index beyond an element's block logic) can
+    # never leave elements switched off: the caller only receives the
+    # status dict - and so can only restore - if this function returns.
+    block_service_status = {
+        block: block.GetAttribute('outserv') for block in reclose_blocks
+    }
+    try:
+        for block, block_logic_list in reclose_blocks.items():
+            # Check if element should be enabled for this trip
+            block_state = block_logic_list[list_index]
+            if block_state in [1.0, 2.0]:
+                block.SetAttribute('outserv', 0)  # Enable
+            else:
+                block.SetAttribute('outserv', 1)  # Disable
+    except Exception:
+        reset_block_service_status(block_service_status)
+        raise
 
     return block_service_status
 

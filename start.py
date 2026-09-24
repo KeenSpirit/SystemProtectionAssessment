@@ -145,25 +145,48 @@ def begin(
         app, external_grid, region, feeders
     )
 
+    # One bad device or element should cost its feeder, not the project:
+    # a failure in these per-feeder stages is logged with its traceback,
+    # the feeder is left out of the results, and the rest carry on.
+    failed_feeders = []
     for i, feeder in enumerate(feeders, start=1):
         name = getattr(feeder.obj, "loc_name", str(feeder.obj))
+        stage = "reach factors"
+        try:
+            # Reach factors feed both the Detailed Results sheet and the
+            # coordination sweep bounds, so this stage runs for every
+            # assessment regardless of which studies were selected.
+            logger.info(f"[{i}/{len(feeders)}] {name}: reach factors")
+            populate_reach_factors(region, feeder.devices)
+            populate_line_reach_factors(region, feeder.devices)
 
-        # Reach factors feed both the Detailed Results sheet and the
-        # coordination sweep bounds, so this stage runs for every
-        # assessment regardless of which studies were selected.
-        logger.info(f"[{i}/{len(feeders)}] {name}: reach factors")
-        populate_reach_factors(region, feeder.devices)
-        populate_line_reach_factors(region, feeder.devices)
+            if "Conductor Damage Assessment" in study_selections:
+                stage = "conductor damage"
+                selected_devices = [
+                    device for device in feeder.devices]
+                logger.info(f"[{i}/{len(feeders)}] {name}: conductor damage")
+                cd.cond_damage(app, selected_devices)
 
-        if "Conductor Damage Assessment" in study_selections:
-            selected_devices = [
-                device for device in feeder.devices]
-            logger.info(f"[{i}/{len(feeders)}] {name}: conductor damage")
-            cd.cond_damage(app, selected_devices)
+            if "Protection Coordination Assessment" in study_selections:
+                stage = "protection coordination"
+                logger.info(f"[{i}/{len(feeders)}] {name}: protection coordination")
+                pc.prot_coordination(app, feeder.devices)
+        except pf.ExitError:
+            raise
+        except Exception:
+            logger.exception(
+                f"[{i}/{len(feeders)}] {name}: {stage} failed; feeder "
+                f"excluded from the results"
+            )
+            failed_feeders.append(feeder)
 
-        if "Protection Coordination Assessment" in study_selections:
-            logger.info(f"[{i}/{len(feeders)}] {name}: protection coordination")
-            pc.prot_coordination(app, feeder.devices)
+    if failed_feeders:
+        failed_ids = {id(f) for f in failed_feeders}
+        feeders = [f for f in feeders if id(f) not in failed_ids]
+        logger.warning(
+            f"{len(failed_feeders)} feeder(s) excluded after a failure: "
+            f"{[getattr(f.obj, 'loc_name', str(f.obj)) for f in failed_feeders]}"
+        )
 
     logger.info("Saving results")
     output_file = sr.save_dataframe(

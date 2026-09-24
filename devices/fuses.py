@@ -21,6 +21,9 @@ from typing import Optional, List
 from devices import fuse_mapping as fm
 import pf_protection_helper as helper
 import assets as ast
+import logging
+
+logger = logging.getLogger(__name__)
 reload(fm)
 reload(ast)
 
@@ -63,6 +66,17 @@ def get_all_fuses(app: pft.Application) -> List[pft.RelFuse]:
         if not fuse.IsOutOfService()
         if determine_fuse_type(fuse)
     ]
+
+    # A fuse with no type has no rating or melt curve.
+    # Exclude it from the study.
+    untyped = [fuse for fuse in fuses if fuse.typ_id is None]
+    if untyped:
+        logger.warning(
+            f"{len(untyped)} in-service line fuse(s) have no fuse type and "
+            f"are excluded from the assessment: "
+            f"{[f.loc_name for f in untyped[:20]]}"
+        )
+        fuses = [fuse for fuse in fuses if fuse.typ_id is not None]
     return fuses
 
 
