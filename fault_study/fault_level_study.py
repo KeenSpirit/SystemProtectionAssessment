@@ -183,6 +183,7 @@ def get_downstream_objects(
     grids = [grid for grid in all_grids if grid.outserv == 0]
 
     untyped_warned = set()
+    unconnected_warned = set()
     for device in devices:
         terminals = [device.term]
         loads = []
@@ -202,6 +203,9 @@ def get_downstream_objects(
             if class_name == ast.ElementType.TERM.value and obj.uknom > 1:
                 terminals.append(obj)
             if class_name == ast.ElementType.LOAD.value and region == 'SEQ':
+                if obj.bus1 is None:
+                    _warn_unconnected(obj, unconnected_warned)
+                    continue
                 loads.append(obj)
             if class_name == ast.ElementType.TFMR.value and region in ['Northern', 'Southern']:
                 load_type = obj.typ_id
@@ -215,6 +219,10 @@ def get_downstream_objects(
                             f"excluded from downstream loads"
                         )
                     continue
+                if obj.bushv is None:
+                    # HV side not connected: no terminal to place the load at.
+                    _warn_unconnected(obj, unconnected_warned)
+                    continue
                 if "Regulators" not in load_type.GetFullName():
                     loads.append(obj)
             if class_name == ast.ElementType.LINE.value:
@@ -223,6 +231,16 @@ def get_downstream_objects(
         device.sect_terms = terminals
         device.sect_loads = loads
         device.sect_lines = lines
+
+
+def _warn_unconnected(obj, warned: set) -> None:
+    """Warn once per load/transformer with no connected (HV) terminal."""
+    if obj not in warned:
+        warned.add(obj)
+        logger.warning(
+            f"{obj.GetClassName()} {obj.GetFullName()} has no connected "
+            f"(HV) terminal; excluded from downstream loads"
+        )
 
 
 def us_ds_device(
