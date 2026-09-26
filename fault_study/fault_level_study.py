@@ -77,7 +77,7 @@ def fault_study(
 
     for feeder in feeders:
         # Build device topology
-        get_downstream_objects(app, region, feeder.devices)
+        get_downstream_objects(app, region, feeder.devices, feeder)
         us_ds_device(feeder.devices, feeder.bu_devices)
         get_ds_capacity(feeder.devices)
         get_device_sections(app, region, feeder.devices)
@@ -155,10 +155,79 @@ def fault_study(
         update_line_data(app, region, feeder.devices)
 
 
+def _is_inside_feeder(device_term, source_term, feeder_elements) -> bool:
+    """
+    True when the device's terminal lies inside the feeder, downstream of
+    the feeder's source terminal. False for a device on the source
+    terminal itself (the feeder CB) or on the bus/grid side of it.
+    """
+    return device_term != source_term and device_term in feeder_elements
+
+
+def _trace_downstream(cubicle, device_term, source_term, feeder_elements):
+    """
+    Trace the network downstream of a protection device's cubicle.
+
+    GetAll(1, 0) follows the cubicle's own orientation, which is not
+    guaranteed to point away from the source. Direction is decided from
+    the feeder itself, not from reaching an external grid:
+
+    - Device inside the feeder (terminal in ElmFeeder.GetAll() and not the
+      source terminal): on a radial feeder the source terminal (Feeder.term)
+      is always on the device's upstream side, so a trace that reaches it
+      ran towards the source and is reversed. This works even when the
+      trace stops at an open switch or transformer before any grid.
+
+    - Device on the source terminal (feeder CB relays), or on the bus/grid
+      side of it (e.g. a bus or incomer device that protects the feeder):
+      the source-terminal test cannot judge these, because the source
+      terminal is on the feeder side or is the device's own terminal.
+      Downstream is the direction containing more of the feeder's
+      elements; the other direction runs to the transformer and grid.
+
+    Args:
+        cubicle: The device's StaCubic.
+        device_term: The device's terminal.
+        source_term: The feeder's source terminal.
+        feeder_elements: Set of the feeder's elements (ElmFeeder.GetAll()).
+
+    Returns:
+        Tuple of (downstream objects, reversed flag, note). note is a
+        reason string when the direction could not be decided and the
+        cubicle orientation was kept, else None.
+    """
+    forward = cubicle.GetAll(1, 0)
+
+    if not _is_inside_feeder(device_term, source_term, feeder_elements):
+        reverse = cubicle.GetAll(0, 0)
+        in_fwd = sum(1 for obj in forward if obj in feeder_elements)
+        in_rev = sum(1 for obj in reverse if obj in feeder_elements)
+        if in_rev > in_fwd:
+            return reverse, True, None
+        if in_rev == in_fwd:
+            return forward, False, (
+                f"both directions reach {in_fwd} feeder element(s); "
+                "cubicle orientation kept"
+            )
+        return forward, False, None
+
+    if source_term not in set(forward):
+        return forward, False, None
+
+    reverse = cubicle.GetAll(0, 0)
+    if source_term in set(reverse):
+        return forward, False, (
+            "feeder source terminal reachable in both directions (loop?); "
+            "cubicle orientation kept"
+        )
+    return reverse, True, None
+
+
 def get_downstream_objects(
     app: pft.Application,
     region: str,
-    devices: List[ast.Device]
+    devices: List[ast.Device],
+    feeder: ast.Feeder,
 ) -> None:
     """
     Populate device objects with their downstream network components.
@@ -170,6 +239,8 @@ def get_downstream_objects(
         app: PowerFactory application instance.
         region: Network region ('SEQ', 'Northern', 'Southern').
         devices: List of Device dataclasses to populate.
+        feeder: The Feeder the devices belong to. Its source terminal and
+            elements decide which side of each device is downstream.
 
     Side Effects:
         Updates sect_terms, sect_loads, and sect_lines for each device.
@@ -179,23 +250,29 @@ def get_downstream_objects(
         - SEQ region uses ElmLod for loads
         - Regional models use ElmTr2 (excluding regulators)
     """
-    all_grids = app.GetCalcRelevantObjects('*.ElmXnet')
-    grids = [grid for grid in all_grids if grid.outserv == 0]
+    source_term = feeder.term
+    feeder_elements = set(feeder.obj.GetAll())
+    feeder_name = getattr(feeder.obj, "loc_name", str(feeder.obj))
 
     untyped_warned = set()
     unconnected_warned = set()
+    reversed_count = 0
+    outside_devices = []
     for device in devices:
         terminals = [device.term]
         loads = []
         lines = []
 
-        down_devices = device.cubicle.GetAll(1, 0)
-
-        # If external grid is downstream, search in opposite direction
-        if any(item in grids for item in down_devices):
-            down_objs = device.cubicle.GetAll(0, 0)
-        else:
-            down_objs = down_devices
+        down_objs, was_reversed, note = _trace_downstream(
+            device.cubicle, device.term, source_term, feeder_elements
+        )
+        if was_reversed:
+            reversed_count += 1
+        if (device.term != source_term
+                and not _is_inside_feeder(device.term, source_term, feeder_elements)):
+            outside_devices.append(device.obj.loc_name)
+        if note:
+            logger.warning(f"{device.obj.loc_name}: section direction - {note}")
 
         for obj in down_objs:
             class_name = obj.GetClassName()
@@ -232,6 +309,18 @@ def get_downstream_objects(
         device.sect_loads = loads
         device.sect_lines = lines
 
+    if reversed_count:
+        logger.info(
+            f"{feeder_name}: {reversed_count} device section(s) traced "
+            f"against the cubicle orientation"
+        )
+    if outside_devices:
+        logger.info(
+            f"{feeder_name}: {len(outside_devices)} device(s) outside the "
+            f"feeder (bus/grid side), direction chosen by feeder overlap: "
+            f"{', '.join(outside_devices)}"
+        )
+
 
 def _warn_unconnected(obj, warned: set) -> None:
     """Warn once per load/transformer with no connected (HV) terminal."""
@@ -259,15 +348,44 @@ def us_ds_device(
 
     Side Effects:
         Populates us_devices and ds_devices lists for each device.
+
+    Direction guard:
+        A device is upstream of this one only if this device's whole
+        section lies inside its section, not merely this device's
+        terminal. On a radial feeder a genuine upstream device always
+        sees everything downstream of this one. A device whose section
+        was traced the wrong way (towards the source) also contains
+        this device's terminal, but not the part of the network beyond
+        it, so the subset test rejects it. Without the guard such a
+        device became the backup: WOWASS-FA53-J01-J11 (feeder CB) ->
+        DO-755681 (downstream fuse), Gladstone 2026-09-26.
+
+        Relays sharing a cubicle have identical sections, so they still
+        qualify as each other's backup.
     """
+    sect_sets = {id(device): set(device.sect_terms) for device in devices}
+
     for device in devices:
         us_devices = []
+        own_sect = sect_sets[id(device)]
 
         for other_device in devices:
             if other_device == device:
                 continue
-            if device.term in other_device.sect_terms:
-                us_devices.append(other_device)
+            if device.term not in other_device.sect_terms:
+                continue
+            other_sect = sect_sets[id(other_device)]
+            if not own_sect <= other_sect:
+                logger.warning(
+                    f"{other_device.obj.loc_name} not used as backup for "
+                    f"{device.obj.loc_name}: its section contains "
+                    f"{device.obj.loc_name}'s terminal but not "
+                    f"{len(own_sect - other_sect)} of its downstream "
+                    f"terminal(s), so it is not upstream. One of the two "
+                    f"sections was probably traced towards the source."
+                )
+                continue
+            us_devices.append(other_device)
 
         if us_devices:
             # Select device with smallest section as immediate backup
