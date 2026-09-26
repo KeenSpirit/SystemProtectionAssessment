@@ -259,37 +259,15 @@ def us_ds_device(
 
     Side Effects:
         Populates us_devices and ds_devices lists for each device.
-
-    Direction guard:
-        A device is upstream of this one only if this device's whole
-        section lies inside its section, not merely this device's
-        terminal.
-        Relays sharing a cubicle have identical sections, so they still
-        qualify as each other's backup.
     """
-    sect_sets = {id(device): set(device.sect_terms) for device in devices}
-
     for device in devices:
         us_devices = []
-        own_sect = sect_sets[id(device)]
 
         for other_device in devices:
             if other_device == device:
                 continue
-            if device.term not in other_device.sect_terms:
-                continue
-            other_sect = sect_sets[id(other_device)]
-            if not own_sect <= other_sect:
-                logger.warning(
-                    f"{other_device.obj.loc_name} not used as backup for "
-                    f"{device.obj.loc_name}: its section contains "
-                    f"{device.obj.loc_name}'s terminal but not "
-                    f"{len(own_sect - other_sect)} of its downstream "
-                    f"terminal(s), so it is not upstream. One of the two "
-                    f"sections was probably traced towards the source."
-                )
-                continue
-            us_devices.append(other_device)
+            if device.term in other_device.sect_terms:
+                us_devices.append(other_device)
 
         if us_devices:
             # Select device with smallest section as immediate backup
