@@ -45,12 +45,19 @@ def _safe_ratio(numerator, denominator, divisor: float = 1.0):
 
     Returns the 'NA' sentinel — already used for unconfigured
     protection functions — when the element has no fault study
-    result (None) or the pickup is missing or zero. This keeps a
-    single terminal with no result from aborting the whole feeder
-    report.
+    result or the pickup is missing or zero. This keeps a single
+    terminal with no result from aborting the whole feeder report.
+
+    A fault current of zero or less is treated as no result, the same
+    as None. The fault study writes 0 rather than None in several
+    places where a fault type does not exist or was not calculated:
+    2-phase and 3-phase levels on single-phase / SWER terminals
+    (assets/termination.py), the 0 default of _line_safe_min /
+    _safe_min when every candidate is None, and lines outside the
+    device's section (update_line_data).
 
     Args:
-        numerator: Fault current in Amperes, or None if the study
+        numerator: Fault current in Amperes, or None / 0 if the study
             produced no result at that element.
         denominator: Pickup setting in Amperes.
         divisor: Optional sequence factor (3 or sqrt(3)).
@@ -58,7 +65,7 @@ def _safe_ratio(numerator, denominator, divisor: float = 1.0):
     Returns:
         Reach factor rounded to 2 decimals, or 'NA'.
     """
-    if numerator is None or not denominator:
+    if numerator is None or numerator <= 0 or not denominator:
         return 'NA'
     return round(numerator / divisor / denominator, 2)
 

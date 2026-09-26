@@ -686,10 +686,10 @@ def format_detailed_results(region: str, feeder) -> pd.DataFrame:
         }
 
         pick_ups = {
-            'EF PRI PU': _padded(dev_reach_factors.get('ef_pickup'), count),
-            'EF BU PU': _padded(dev_reach_factors.get('bu_ef_pickup'), count),
-            'PH PRI PU': _padded(dev_reach_factors.get('ph_pickup'), count),
-            'PH BU PU': _padded(dev_reach_factors.get('bu_ph_pickup'), count)
+            'EF PRI PU': _pickup_cells(dev_reach_factors.get('ef_pickup'), count),
+            'EF BU PU': _pickup_cells(dev_reach_factors.get('bu_ef_pickup'), count),
+            'PH PRI PU': _pickup_cells(dev_reach_factors.get('ph_pickup'), count),
+            'PH BU PU': _pickup_cells(dev_reach_factors.get('bu_ph_pickup'), count)
         }
 
         reach_factors = {
@@ -704,10 +704,10 @@ def format_detailed_results(region: str, feeder) -> pd.DataFrame:
         # in service simply leaves them blank.
         if not nps_oos(device):
             pick_ups.update({
-                'NPS PRI PU': _padded(
+                'NPS PRI PU': _pickup_cells(
                     dev_reach_factors.get('nps_pickup'), count
                 ),
-                'NPS BU PU': _padded(
+                'NPS BU PU': _pickup_cells(
                     dev_reach_factors.get('bu_nps_pickup'), count
                 ),
             })
@@ -845,7 +845,30 @@ def _padded(values: Optional[List], length: int) -> List:
             len(values), length
         )
 
-    return list(values[:length])
+        return list(values[:length])
+
+
+def _pickup_cells(values: Optional[List], length: int) -> List:
+    """
+    Pickup column values for the Detailed Results sheet.
+
+    determine_pickup_values reports 0 A for a protection function the
+    device does not have (e.g. the phase pickup of an EF/SEF-only
+    relay).
+
+    Args:
+        values: Pickup list from device_reach_factors, or None.
+        length: Number of terminals in the device's section.
+
+    Returns:
+        List of exactly ``length`` items: the pickup, 'NA' where it
+        is not configured, or None where no value was produced.
+    """
+    return [
+        'NA' if isinstance(v, (int, float)) and not isinstance(v, bool)
+                and v <= 0 else v
+        for v in _padded(values, length)
+    ]
 
 
 def clean_string_value(value: Any) -> str:
