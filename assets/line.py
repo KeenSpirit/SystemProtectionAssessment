@@ -296,6 +296,25 @@ def _get_voltage(line: "pft.ElmLne") -> float:
     return 0.0
 
 
+def _match_conductor(line_type: str, cond_rating_dict: dict):
+    """
+    Find the ratings row for a PowerFactory conductor type name.
+
+    Type names are '<conductor>_<voltage>' (e.g. '3/2.75 SC/GZ_22kV').
+    An exact match on the part before the last '_' wins. Otherwise the
+    longest table name contained in the type name is used, so a short
+    name ('7/1.75 HDBC', 'Box') can never shadow a longer one
+    ('37/1.75 HDBC', 'Boxing') regardless of row order.
+    """
+    base = line_type.rsplit("_", 1)[0].strip()
+    if base in cond_rating_dict:
+        return cond_rating_dict[base]
+    matches = [cond for cond in cond_rating_dict if cond and cond in line_type]
+    if not matches:
+        return None
+    return cond_rating_dict[max(matches, key=len)]
+
+
 def _get_conductor_info(
     line: "pft.ElmLne",
     oh_lines: Optional[set] = None,
@@ -328,10 +347,9 @@ def _get_conductor_info(
     if oh_lines is not None and line in oh_lines:
         typ_con = line.GetAttribute("e:pCondCir")
         line_type = typ_con.loc_name
-        for cond, data in cond_rating_dict.items():
-            if cond in line_type:
-                thermal_rating = float(data[0]) * 1000
-                break
+        data = _match_conductor(line_type, cond_rating_dict)
+        if data is not None:
+            thermal_rating = float(data[0]) * 1000
     else:
         if construction == "TypGeo":
             typ_con = line.GetAttribute("e:pCondCir")

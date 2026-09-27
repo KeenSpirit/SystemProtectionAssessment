@@ -463,7 +463,7 @@ def format_grid_data(ext_grid: Dict) -> Dict:
 
     for grid, attributes in ext_grid.items():
         formatted_grid_data['Parameter'] = [
-            '3-P fault level (A):',
+            '3-P fault level (kA):',
             'R/X:',
             'Z2/Z1:',
             'X0/X1:',
