@@ -21,8 +21,8 @@ def conductors_properties():
     """
     cond_csv = (
         r"\\ecasd01\WksMgmt\PowerFactory"
-        r"\ScriptsDEV\ProtectionAssessment"
-        r"\docs"
+        r"\ScriptsDEV\SystemProtectionAssessment"
+        r"\data"
     )
     csv_open = open(
         f"{cond_csv}\\ratings_lookup.csv",
