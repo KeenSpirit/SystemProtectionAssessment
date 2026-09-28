@@ -502,7 +502,7 @@ def format_fl_results(region: str, feeders: List) -> Dict:
             summary_df = format_study_results(feeder)
             detailed_df = format_detailed_results(region, feeder)
         except Exception:
-            logger.exception("Fault level formatting failed for feeder %s; skipping", feeder.loc_name)
+            logger.exception("Fault level formatting failed for feeder %s; skipping", feeder.obj.loc_name)
             continue
         fault_studies_pd[feeder.obj.loc_name] = [
             summary_df,
@@ -847,6 +847,7 @@ def _padded(values: Optional[List], length: int) -> List:
 
         return list(values[:length])
 
+    return list(values)
 
 def _pickup_cells(values: Optional[List], length: int) -> List:
     """

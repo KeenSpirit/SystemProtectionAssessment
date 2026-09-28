@@ -623,11 +623,21 @@ def append_floating_terms(
             # Z2 is taken as equal to Z1: PowerFactory line types
             # carry no separate negative-sequence parameters, and for
             # passive plant Z2 == Z1 by definition.
-            line_z = [
-                line.GetAttribute("R0"), line.GetAttribute("X0"),
-                line.GetAttribute("R1"), line.GetAttribute("X1"),
-                line.GetAttribute("R1"), line.GetAttribute("X1"),
-            ]
+            # Untyped lines carry no R0/X0/R1/X1 (they come from the
+            # line type), so GetAttribute raises AttributeError.
+            try:
+                line_z = [
+                    line.GetAttribute("R0"), line.GetAttribute("X0"),
+                    line.GetAttribute("R1"), line.GetAttribute("X1"),
+                    line.GetAttribute("R1"), line.GetAttribute("X1"),
+                ]
+            except AttributeError:
+                logger.warning(
+                    "Floating terminal %s skipped: line %s has no "
+                    "impedance data (untyped line?).",
+                    elmterm.loc_name, line.loc_name
+                )
+                continue
 
             termination = ast.initialise_term_dataclass(elmterm)
             derived = 0
