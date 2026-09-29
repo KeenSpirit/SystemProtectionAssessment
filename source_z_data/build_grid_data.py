@@ -16,6 +16,7 @@ Ergon fault level report and writes three rows:
 Columns F..J (3P fault, R/X, Z2/Z1, X0/X1, R0/X1) are copied verbatim from
 report columns V..Z.
 
+
 MATCHING RULES (in order of precedence)
 ---------------------------------------
 1. Sub-code.   The first four characters of the grid name are matched against
