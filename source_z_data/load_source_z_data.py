@@ -57,7 +57,7 @@ logger = logging.getLogger(__name__)
 SOURCE_Z_DIR_NAME = "data"
 
 # Preferred file names
-REGIONAL_WORKBOOK = "grid_results_ee"
+REGIONAL_WORKBOOK = "grid_results_ee.xlsx"
 REGIONAL_WORKBOOK_GLOB = "grid_results_ee*.xlsx"
 SEQ_WORKBOOK = "grid_results_egx.xlsx"
 SEQ_WORKBOOK_GLOB = "grid_results_egx*.xlsx"
@@ -584,19 +584,23 @@ def _check_ikss_units(
         if any(value <= 0 for value in currents):
             non_positive.append(key)
 
+    # Neither kind of value may reach ElmXnet: drop the grid so that
+    # start.get_grid_data keeps the model's own values for it.
+    for key in set(amps_like) | set(non_positive):
+        del grid_data[key]
+
     if amps_like:
         logger.error(
-            "%s of %s grids in %s have fault currents above %s kA. "
-            "ikss is set in kA, so the workbook units have probably "
-            "changed and every value would be 1000x too high. Check "
-            "the source before trusting this run. First few: %s",
-            len(amps_like), len(grid_data), workbook.name,
-            _IKSS_KA_SANITY_LIMIT, amps_like[:5]
+            "%s grids in %s have fault currents above %s kA (amps, not "
+            "kA); excluded, so the model keeps its own values for them. "
+            "First few: %s",
+            len(amps_like), workbook.name, _IKSS_KA_SANITY_LIMIT,
+            amps_like[:5]
         )
     if non_positive:
         logger.warning(
-            "%s grids in %s have a fault current of zero or less; these "
-            "grids cannot supply fault current in the study. First "
-            "few: %s",
+            "%s grids in %s have a fault current of zero or less; "
+            "excluded, so the model keeps its own values for them. "
+            "First few: %s",
             len(non_positive), workbook.name, non_positive[:5]
         )
