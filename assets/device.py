@@ -91,6 +91,8 @@ class Device:
     ph_coord_margin: Optional[float] = None
     pg_coord_fl: Optional[float] = None
     pg_coord_margin: Optional[float] = None
+    # Why a coordination margin is blank ('' when both were calculated).
+    coord_note: str = ""
 
     # Reach factors - calculated by relays.reach_factors.
     # populate_reach_factors, rendered by format_detailed_results.

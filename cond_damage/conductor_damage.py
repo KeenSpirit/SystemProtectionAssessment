@@ -165,6 +165,10 @@ def cond_damage(app: pft.Application, devices: List) -> None:
         # means that line's total is missing a contribution of unknown
         # size and must not be reported as if complete.
         incomplete_trips = [[] for _ in lines]
+        # A single-wire SWER line cannot carry a phase-to-phase fault, so
+        # it is left out of the phase pass. Its phase verdict is reported
+        # as "SWER" by cond_dmg_results, not as a failed calculation.
+        swer_lines = [_is_swer_line(line) for line in lines]
 
         while trip_count <= total_trips:
             block_service_status = reclose.set_enabled_elements(dev_obj)
@@ -173,6 +177,8 @@ def cond_damage(app: pft.Application, devices: List) -> None:
                     dev_obj, trip_count, element_cache
                 )
                 for i, line in enumerate(lines):
+                    if swer_lines[i]:
+                        continue
                     min_fl_clear_times, _ = fault_clear_times(
                         app, device, line, fl_step, line_fault_type,
                         prot_elements, clear_time_cache,
@@ -201,7 +207,13 @@ def cond_damage(app: pft.Application, devices: List) -> None:
             trip_count = reclose.trip_count(dev_obj, increment=True)
 
         for i, line in enumerate(lines):
+            if swer_lines[i]:
+                line.ph_energy = None
+                line.ph_clear_time = None
+                line.ph_fl = None
+                continue
             if incomplete_trips[i]:
+                # A failed trip contributes 0 to that line's total,
                 # A failed trip contributes 0 to that line's total,
                 # which would understate the accumulated let-through and
                 # could turn a genuine FAIL into a PASS. None is honest:
@@ -223,7 +235,8 @@ def cond_damage(app: pft.Application, devices: List) -> None:
             logger.warning(
                 f"{dev_obj.loc_name}: phase fault clearing time could not "
                 f"be calculated on trip(s) {trips_seen} for "
-                f"{len(incomplete_lines)} of {len(lines)} line(s); their "
+                f"{len(incomplete_lines)} of "
+                f"{len(lines) - sum(swer_lines)} non-SWER line(s); their "
                 f"phase energy is reported as no data rather than a "
                 f"partial total. Device has {total_trips} trip(s). Check "
                 f"whether any phase element is enabled on those trips."
@@ -307,6 +320,15 @@ def cond_damage(app: pft.Application, devices: List) -> None:
                 f"partial total. Device has {total_trips} trip(s). Check "
                 f"whether any earth element is enabled on those trips."
             )
+
+
+def _is_swer_line(line: Any) -> bool:
+    """True for a SWER line (line type name contains 'SWER')."""
+    try:
+        line_type = line.obj.typ_id
+        return bool(line_type) and 'SWER' in line_type.loc_name
+    except AttributeError:
+        return False
 
 
 # =============================================================================
