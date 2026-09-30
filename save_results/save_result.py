@@ -59,9 +59,11 @@ reload(cd)
 # existing downstream lookups keep matching.
 #
 # The four coordination columns are always present. They are blank for
-# any device prot_coordination could not assess (missing fault level or
-# pickup data), and blank for every device if the coordination stage did
-# not run.
+# any device prot_coordination could not assess, and blank for every
+# device if the coordination stage did not run. 'Coord Note' says why a
+# margin is blank (no backup, backup only in the same cubicle, missing
+# fault level / pickup data, or no current at which both devices
+# operate); it is empty when both margins were calculated.
 SUMMARY_COLUMNS = [
     'Feeder',
     'Protection device',
@@ -86,6 +88,7 @@ SUMMARY_COLUMNS = [
     'Ph Coord FL (A)',
     'PG Coord Margin (s)',
     'PG Coord FL (A)',
+    'Coord Note',
     'Feeder Open Points',
 ]
 
@@ -581,6 +584,7 @@ def format_study_results(feeder) -> pd.DataFrame:
             'Ph Coord FL (A)': safe_numeric(device.ph_coord_fl),
             'PG Coord Margin (s)': safe_round(device.pg_coord_margin),
             'PG Coord FL (A)': safe_numeric(device.pg_coord_fl),
+            'Coord Note': getattr(device, 'coord_note', '') or '',
             'Feeder Open Points': open_points,
         })
 
@@ -767,7 +771,14 @@ def format_detailed_results(region: str, feeder) -> pd.DataFrame:
     if not frames:
         return pd.DataFrame(columns=DETAILED_COLUMNS)
 
-    return pd.concat(frames, ignore_index=True)
+    # Drop columns that are entirely empty in a frame before
+    # concatenating, then restore the full schema. pandas is changing
+    # how all-NA columns affect the result dtype (FutureWarning); with
+    # them removed first, the dtype comes only from real values.
+    frames = [f.dropna(axis=1, how='all') for f in frames]
+    return pd.concat(frames, ignore_index=True).reindex(
+        columns=DETAILED_COLUMNS
+    )
 
 
 # =============================================================================

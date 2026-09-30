@@ -46,7 +46,11 @@ def fuse_clear_time(fuse: Any, flt_cur: float) -> Optional[float]:
 
     type_fuse = fuse.GetAttribute("e:typ_id")
     # melt curve
-    typechatoc = type_fuse.GetAttribute("e:pmelt")
+    typechatoc = type_fuse.GetAttribute("e:pmelt") if type_fuse else None
+    if typechatoc is None:
+        # A fuse type with no melt characteristic cannot produce a
+        # clearing time; report no data rather than failing the feeder.
+        return op_time
     # curve type
     curve_type = typechatoc.GetAttribute("e:i_type")
     # curve equation variables
