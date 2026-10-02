@@ -20,9 +20,52 @@ def max_phase_fl(obj: Any) -> Optional[float]:
 # =============================================================================
 
 
+# TypFuse e:pmelt characteristic layout (Hermite, i_curves):
+#   2 curves: curve 1 (columns 0-1) = minimum melt,
+#             curve 2 (columns 2-3) = total clear.
+#   1 curve:  taken as total clear. There is no minimum melt curve;
+#             fuse_min_melt_time falls back to this curve and
+#             fuse_has_min_melt returns False so callers can flag it.
+FUSE_TOTAL_CLEAR = 'total_clear'
+FUSE_MIN_MELT = 'min_melt'
+
+
+def _fuse_characteristic(fuse: Any) -> Optional[Any]:
+    """The fuse type's e:pmelt characteristic, or None."""
+    type_fuse = fuse.GetAttribute("e:typ_id")
+    return type_fuse.GetAttribute("e:pmelt") if type_fuse else None
+
+
+def fuse_has_min_melt(fuse: Any) -> bool:
+    """True when the fuse type carries a separate minimum melt curve."""
+    typechatoc = _fuse_characteristic(fuse)
+    if typechatoc is None:
+        return False
+    return typechatoc.GetAttribute("e:i_curves") == 2
+
+
 def fuse_clear_time(fuse: Any, flt_cur: float) -> Optional[float]:
+    """Fuse total clearing time (curve 2, or the only curve)."""
+    return fuse_curve_time(fuse, flt_cur, FUSE_TOTAL_CLEAR)
+
+
+def fuse_min_melt_time(fuse: Any, flt_cur: float) -> Optional[float]:
     """
-    Calculate fuse total clearing time for a given fault current.
+    Fuse minimum melt time (curve 1 of a two-curve characteristic).
+
+    A single-curve characteristic is total clear, so this falls back
+    to it; check fuse_has_min_melt to know whether it did.
+    """
+    return fuse_curve_time(fuse, flt_cur, FUSE_MIN_MELT)
+
+
+def fuse_curve_time(
+    fuse: Any,
+    flt_cur: float,
+    curve: str = FUSE_TOTAL_CLEAR
+) -> Optional[float]:
+    """
+    Calculate a fuse operating time for a given fault current.
 
     Interpolates linearly on the fuse time-current characteristic
     curve. Only Hermite Polynomial curves (type 6) are supported.
@@ -30,23 +73,22 @@ def fuse_clear_time(fuse: Any, flt_cur: float) -> Optional[float]:
     Args:
         fuse: RelFuse element with associated TypFuse.
         flt_cur: Fault current in Amperes.
+        curve: FUSE_TOTAL_CLEAR or FUSE_MIN_MELT.
 
     Returns:
-        Total clearing time in seconds, or None if:
+        Time in seconds on the selected curve, or None if:
         - Fault current below minimum pickup
         - Unsupported curve type
         - Unsupported curve count
 
     Note:
-        Fuse curves are read from the TypFuse melt characteristic.
-        The function uses linear interpolation between curve points.
+        Fuse curves are read from the TypFuse e:pmelt characteristic.
+        See the layout note above for which curve is which.
     """
 
     op_time = None
 
-    type_fuse = fuse.GetAttribute("e:typ_id")
-    # melt curve
-    typechatoc = type_fuse.GetAttribute("e:pmelt") if type_fuse else None
+    typechatoc = _fuse_characteristic(fuse)
     if typechatoc is None:
         # A fuse type with no melt characteristic cannot produce a
         # clearing time; report no data rather than failing the feeder.
@@ -63,10 +105,11 @@ def fuse_clear_time(fuse: Any, flt_cur: float) -> Optional[float]:
 
     curve_count = typechatoc.GetAttribute("e:i_curves")
 
+    # p is the current column of the selected curve; time is p + 1.
     if curve_count == 1:
-        p = curve_count - 1
+        p = 0
     elif curve_count == 2:
-        p = curve_count
+        p = 0 if curve == FUSE_MIN_MELT else 2
     else:
         return op_time
 

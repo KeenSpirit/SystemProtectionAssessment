@@ -91,6 +91,10 @@ class Device:
     ph_coord_margin: Optional[float] = None
     pg_coord_fl: Optional[float] = None
     pg_coord_margin: Optional[float] = None
+    # Required margin for the pair that set each worst margin:
+    # 0.3 s relay-relay, 0.1 s with a fuse on either side.
+    ph_coord_required: Optional[float] = None
+    pg_coord_required: Optional[float] = None
     # Why a coordination margin is blank ('' when both were calculated).
     coord_note: str = ""
 

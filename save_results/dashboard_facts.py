@@ -58,8 +58,16 @@ once.
 Thresholds
 ----------
 Primary reach: 2.0 (SEQ) / 1.7 (Regional Models). Backup: 1.3.
-System normal backup: 1.5. Coordination margin: 0.3 s - not applied
-here; margins are emitted raw and the dashboard applies the line.
+System normal backup: 1.5.
+
+Coordination margin: depends on the primary/backup pair - 0.3 s
+relay-relay, 0.1 s with a fuse on either side (prot_coord.
+required_margin). Not applied here; margins are emitted raw alongside
+the required margin of the pair that set each one (ph_coord_required_s,
+pg_coord_required_s), and the dashboard compares the two. The required
+columns are blank wherever the margin is blank.
+coord_margin_threshold_s is retained at 0.3 s for runs written before
+the per-pair columns existed; it is the fallback for those rows only.
 Every row carries the thresholds that were applied, so historic rows
 remain interpretable if the standards move.
 
@@ -94,7 +102,10 @@ PRIMARY_RF_THRESHOLD = {
 }
 BACKUP_RF_THRESHOLD = 1.3
 SN_BACKUP_RF_THRESHOLD = 1.5
-COORD_MARGIN_THRESHOLD_S = 0.3  # informational; applied in the dashboard
+# Legacy blanket coordination threshold. Kept so the column stays in
+# place for positional folder combines and historic rows remain
+# interpretable; current rows carry per-pair required margins.
+COORD_MARGIN_THRESHOLD_S = 0.3
 
 # Reach tiers: tier name -> (ef main key, ef nps key, ph main key,
 # ph nps key, pickup prefix). The pickup prefix selects which stored
@@ -453,6 +464,10 @@ def build_dashboard_facts(
                 'pg_coord_margin_s': device.pg_coord_margin,
                 'pg_coord_fl_a': device.pg_coord_fl,
                 'coord_margin_threshold_s': COORD_MARGIN_THRESHOLD_S,
+                'ph_coord_required_s': getattr(
+                    device, 'ph_coord_required', None),
+                'pg_coord_required_s': getattr(
+                    device, 'pg_coord_required', None),
                 'pri_rf_threshold': pri_threshold,
                 'bu_rf_threshold': BACKUP_RF_THRESHOLD,
                 'sn_bu_rf_threshold': SN_BACKUP_RF_THRESHOLD,

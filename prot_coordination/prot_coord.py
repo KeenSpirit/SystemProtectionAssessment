@@ -25,6 +25,39 @@ FL_STEP_AMPS = 10
 # saving trip and is not graded against. See delayed_trip_time.
 FAST_TRIP_RATIO = 0.5
 
+# Required coordination margins in seconds. A relay-relay pair needs
+# 300 ms; any pair with a fuse on either side (fuse-fuse, fuse primary
+# with relay backup, relay primary with fuse backup) needs 100 ms.
+# Times compared: relay trip time (no switch operate time) for every
+# relay; fuse total clear time, except a backup fuse behind a relay
+# primary, which uses minimum melt. See required_margin.
+RELAY_RELAY_MARGIN_S = 0.3
+FUSE_PAIR_MARGIN_S = 0.1
+
+
+def is_fuse_device(device) -> bool:
+    """True when the Device dataclass wraps a RelFuse."""
+    return device.obj.GetClassName() == ElementType.FUSE.value
+
+
+def required_margin(primary_is_fuse: bool, backup_is_fuse: bool) -> float:
+    """
+    Minimum coordination margin for a primary/backup pair.
+
+    Pure function: no PowerFactory access, testable offline.
+
+    Args:
+        primary_is_fuse: True when the primary device is a fuse.
+        backup_is_fuse: True when the backup device is a fuse.
+
+    Returns:
+        RELAY_RELAY_MARGIN_S for two relays, otherwise
+        FUSE_PAIR_MARGIN_S.
+    """
+    if primary_is_fuse or backup_is_fuse:
+        return FUSE_PAIR_MARGIN_S
+    return RELAY_RELAY_MARGIN_S
+
 
 def prot_coordination(app: pft.Application, devices: List):
     fl_step = FL_STEP_AMPS
@@ -41,8 +74,11 @@ def prot_coordination(app: pft.Application, devices: List):
         trip_count = 1
         worst_ph_coord_fl = None
         worst_ph_coord_margin = None
+        worst_ph_coord_required = None
         worst_pg_coord_fl = None
         worst_pg_coord_margin = None
+        worst_pg_coord_required = None
+        primary_is_fuse = is_fuse_device(device)
 
         max_phase_fl = trip_time.max_phase_fl(device)
         skip_ph_coord = not device.min_device_2ph or not max_phase_fl
@@ -92,7 +128,32 @@ def prot_coordination(app: pft.Application, devices: List):
         # A fuse or a relay without reclosing has a single trip.
         bu_ph_candidates = []
         bu_pg_candidates = []
+        # Required margin for this primary against each backup, keyed
+        # on id() because Device dataclasses are not hashable.
+        bu_required = {}
+        # Fuse times are total clear, except a backup fuse behind a
+        # relay primary, which is graded on its minimum melt. Relay
+        # times are trip times (no switch operate time) throughout.
+        bu_fuse_curve = (
+            trip_time.FUSE_TOTAL_CLEAR if primary_is_fuse
+            else trip_time.FUSE_MIN_MELT
+        )
+        # Backup fuses that should be graded on minimum melt but whose
+        # type has only the total clear curve.
+        no_min_melt = []
         for bu_device in eligible_bu_devices:
+            backup_is_fuse = is_fuse_device(bu_device)
+            bu_required[id(bu_device)] = required_margin(
+                primary_is_fuse, backup_is_fuse
+            )
+            if (backup_is_fuse and not primary_is_fuse
+                    and not trip_time.fuse_has_min_melt(bu_device.obj)):
+                no_min_melt.append(str(bu_device.obj.loc_name))
+                logger.warning(
+                    f"{dev_obj.loc_name}: backup fuse "
+                    f"{bu_device.obj.loc_name} has no minimum melt curve; "
+                    f"graded on its total clear curve"
+                )
             swer = False
             bu_fault_type = 'Phase-Ground'
             if not skip_pg_coord:
@@ -115,31 +176,48 @@ def prot_coordination(app: pft.Application, devices: List):
 
         # Backup times depend only on the fault level, not on the
         # primary's trip, so each is calculated once per fault level.
+        # Each entry is (fastest backup time, required margin for that
+        # primary/backup pair), or (None, None) if no backup operates.
         bu_ph_time_cache = {}
         bu_pg_time_cache = {}
 
+        def fastest_backup(timed):
+            # timed: [(time or None, required margin), ...]. On a tie
+            # the stricter margin is kept.
+            best = (None, None)
+            for t, req in timed:
+                if t is None:
+                    continue
+                if (best[0] is None or t < best[0]
+                        or (t == best[0] and req > best[1])):
+                    best = (t, req)
+            return best
+
         def bu_ph_time(fl):
             if fl not in bu_ph_time_cache:
-                times = [
-                    delayed_trip_time(trip_elements, fl, '2-Phase')
-                    for _, trip_elements in bu_ph_candidates
-                ]
-                times = [t for t in times if t is not None]
-                bu_ph_time_cache[fl] = min(times) if times else None
+                bu_ph_time_cache[fl] = fastest_backup(
+                    (delayed_trip_time(
+                        trip_elements, fl, '2-Phase', bu_fuse_curve),
+                     bu_required[id(bu_device)])
+                    for bu_device, trip_elements in bu_ph_candidates
+                )
             return bu_ph_time_cache[fl]
 
         def bu_pg_time(fl):
             if fl not in bu_pg_time_cache:
-                times = []
+                timed = []
                 for bu_device, swer, bu_fault_type, trip_elements in bu_pg_candidates:
                     bu_fault_level = (
                         swer_transform(device, bu_device, fl) if swer else fl
                     )
-                    times.append(delayed_trip_time(
-                        trip_elements, bu_fault_level, bu_fault_type
+                    timed.append((
+                        delayed_trip_time(
+                            trip_elements, bu_fault_level, bu_fault_type,
+                            bu_fuse_curve
+                        ),
+                        bu_required[id(bu_device)],
                     ))
-                times = [t for t in times if t is not None]
-                bu_pg_time_cache[fl] = min(times) if times else None
+                bu_pg_time_cache[fl] = fastest_backup(timed)
             return bu_pg_time_cache[fl]
 
         # Backup instantaneous pickups are sampled either side too, so a
@@ -170,13 +248,20 @@ def prot_coordination(app: pft.Application, devices: List):
                     )
                     for fl in ph_fl_samples:
                         dev_time = elements_time(active_elements, fl, '2-Phase')
-                        bu_time = bu_ph_time(fl)
+                        bu_time, required = bu_ph_time(fl)
                         if dev_time is None or bu_time is None:
                             continue
                         coord_margin = bu_time - dev_time
-                        if worst_ph_coord_margin is None or coord_margin < worst_ph_coord_margin:
+                        # Worst point = largest shortfall against the
+                        # pair's required margin. Same as smallest raw
+                        # margin unless fuse and relay backups govern
+                        # at different currents.
+                        if (worst_ph_coord_margin is None
+                                or coord_margin - required
+                                < worst_ph_coord_margin - worst_ph_coord_required):
                             worst_ph_coord_fl = fl
                             worst_ph_coord_margin = coord_margin
+                            worst_ph_coord_required = required
 
                 if not skip_pg_coord:
                     active_elements = get_active_elements(device, 'Phase-Ground')
@@ -186,13 +271,16 @@ def prot_coordination(app: pft.Application, devices: List):
                     )
                     for fl in pg_fl_samples:
                         dev_time = elements_time(active_elements, fl, 'Phase-Ground')
-                        bu_time = bu_pg_time(fl)
+                        bu_time, required = bu_pg_time(fl)
                         if dev_time is None or bu_time is None:
                             continue
                         coord_margin = bu_time - dev_time
-                        if worst_pg_coord_margin is None or coord_margin < worst_pg_coord_margin:
+                        if (worst_pg_coord_margin is None
+                                or coord_margin - required
+                                < worst_pg_coord_margin - worst_pg_coord_required):
                             worst_pg_coord_fl = fl
                             worst_pg_coord_margin = coord_margin
+                            worst_pg_coord_required = required
             finally:
                 reclose.reset_block_service_status(block_service_status)
             trip_count = reclose.trip_count(dev_obj, increment=True)
@@ -200,25 +288,45 @@ def prot_coordination(app: pft.Application, devices: List):
         # Update device worst_coord_margin and worst_coord_fl
         device.ph_coord_fl = worst_ph_coord_fl
         device.ph_coord_margin = worst_ph_coord_margin
+        device.ph_coord_required = worst_ph_coord_required
         device.pg_coord_fl = worst_pg_coord_fl
         device.pg_coord_margin = worst_pg_coord_margin
+        device.pg_coord_required = worst_pg_coord_required
         device.coord_note = coord_note(
             device, eligible_bu_devices, skip_ph_coord, skip_pg_coord
         )
+        if no_min_melt:
+            fallback = (
+                    "Backup fuse " + ", ".join(no_min_melt)
+                    + " has no minimum melt curve - graded on total clear"
+            )
+            device.coord_note = "; ".join(
+                part for part in (device.coord_note, fallback) if part
+            )
 
         # Leave the recloser at trip 1 rather than trips+1 so the
         # assessment does not persist counter drift into the model.
         reclose.reset_reclosing(dev_obj)
 
 
-def elements_time(prot_elements: List, fl: float, fault_type: str) -> Optional[float]:
+def elements_time(
+        prot_elements: List,
+        fl: float,
+        fault_type: str,
+        fuse_curve: str = trip_time.FUSE_TOTAL_CLEAR
+) -> Optional[float]:
     """
     Fastest operate time of a set of elements at a fault level.
+
+    Relay elements give their trip time (no switch operate time).
+    A fuse gives its time on fuse_curve.
 
     Args:
         prot_elements: Active elements (or a single-item fuse list).
         fl: Fault current in amps.
         fault_type: '2-Phase' or 'Phase-Ground'.
+        fuse_curve: trip_time.FUSE_TOTAL_CLEAR (default) or
+            trip_time.FUSE_MIN_MELT.
 
     Returns:
         The fastest positive operate time in seconds, or None if no
@@ -227,7 +335,7 @@ def elements_time(prot_elements: List, fl: float, fault_type: str) -> Optional[f
     fastest = None
     for element in prot_elements:
         if element.GetClassName() == ElementType.FUSE.value:
-            operate_time = trip_time.fuse_clear_time(element, fl)
+            operate_time = trip_time.fuse_curve_time(element, fl, fuse_curve)
         else:
             element_current = current_conversion.get_measured_current(
                 element, fl, fault_type)
@@ -282,7 +390,12 @@ def backup_trip_elements(bu_device, fault_types: List[str]) -> Dict[str, List[Li
     return per_trip
 
 
-def delayed_trip_time(trip_elements: List[List], fl: float, fault_type: str) -> Optional[float]:
+def delayed_trip_time(
+        trip_elements: List[List],
+        fl: float,
+        fault_type: str,
+        fuse_curve: str = trip_time.FUSE_TOTAL_CLEAR
+) -> Optional[float]:
     """
     Backup operate time at a fault level, graded on its delayed trips.
 
@@ -299,12 +412,17 @@ def delayed_trip_time(trip_elements: List[List], fl: float, fault_type: str) -> 
         trip_elements: Active elements per trip, from backup_trip_elements.
         fl: Fault current seen by the backup, in amps.
         fault_type: '2-Phase' or 'Phase-Ground'.
+        fuse_curve: Curve used if the backup is a fuse; see
+            elements_time.
 
     Returns:
         The backup's delayed-trip operate time in seconds, or None if no
         trip operates at this fault level.
     """
-    times = [elements_time(elements_, fl, fault_type) for elements_ in trip_elements]
+    times = [
+        elements_time(elements_, fl, fault_type, fuse_curve)
+        for elements_ in trip_elements
+    ]
     operating = [t for t in times if t is not None]
     if not operating:
         return None
