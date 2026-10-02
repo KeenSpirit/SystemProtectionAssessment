@@ -60,6 +60,12 @@ DEVICE_FACT_COLUMNS = [
     'pri_reach_km', 'bu_reach_km', 'sn_bu_reach_km',
     'pri_reach_unassessable_km', 'bu_reach_unassessable_km',
     'sn_bu_reach_unassessable_km',
+    # Appended, never inserted: the Folder connector combines by
+    # position, so new columns go at the end and files written before
+    # them read the trailing columns as blank. Required coordination
+    # margin of the pair that set each margin (0.3 s relay-relay,
+    # 0.1 s with a fuse).
+    'ph_coord_required_s', 'pg_coord_required_s',
 ]
 
 LINE_FACT_COLUMNS = [
