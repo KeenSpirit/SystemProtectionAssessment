@@ -85,8 +85,10 @@ SUMMARY_COLUMNS = [
     'Downstream Devices',
     'Back-up Device',
     'Ph Coord Margin (s)',
+    'Ph Coord Req (s)',
     'Ph Coord FL (A)',
     'PG Coord Margin (s)',
+    'PG Coord Req (s)',
     'PG Coord FL (A)',
     'Coord Note',
     'Feeder Open Points',
@@ -581,8 +583,12 @@ def format_study_results(feeder) -> pd.DataFrame:
             'Downstream Devices': ', '.join(ds_names),
             'Back-up Device': ', '.join(us_names),
             'Ph Coord Margin (s)': safe_round(device.ph_coord_margin),
+            'Ph Coord Req (s)': safe_round(
+                getattr(device, 'ph_coord_required', None)),
             'Ph Coord FL (A)': safe_numeric(device.ph_coord_fl),
             'PG Coord Margin (s)': safe_round(device.pg_coord_margin),
+            'PG Coord Req (s)': safe_round(
+                getattr(device, 'pg_coord_required', None)),
             'PG Coord FL (A)': safe_numeric(device.pg_coord_fl),
             'Coord Note': getattr(device, 'coord_note', '') or '',
             'Feeder Open Points': open_points,
