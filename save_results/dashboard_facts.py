@@ -11,14 +11,39 @@ Two tables come out, sharing the feeder/device key:
 
     device rows - one per protection device. Coordination fields plus
         overhead-km attributions for conductor damage and reach, per
-        tier. Device sections are exclusive (get_device_sections strips
-        overlaps), so feeder and region totals are plain sums of these
-        rows - there is no separate feeder table to reconcile.
+        tier. Feeder and region totals are plain sums of these rows -
+        there is no separate feeder table to reconcile. That holds
+        because every line's km is attributed to exactly one row; see
+        "Co-located relays" below for the one case that needs care.
 
-    line rows - one per sectioned line. The raw reach factors, damage
-        verdicts and derived statuses, for drill-through and for
-        re-cutting history against different thresholds without
-        re-running 80 projects.
+    line rows - one per sectioned line per device. The raw reach
+        factors, damage verdicts and derived statuses, for
+        drill-through and for re-cutting history against different
+        thresholds without re-running 80 projects. A line protected
+        by co-located relays appears once per relay, each row carrying
+        that relay's own statuses.
+
+Co-located relays
+-----------------
+get_device_sections strips overlaps between sections, but keys its
+work by terminal, so relays sharing a terminal within a feeder (two
+relays on one CB, e.g. INA2A+B_J20A and INA2A+B_J41) come out with
+identical sections. Summing their rows would count that section once
+per relay.
+
+Instead, the relays on one terminal form a group whose section is
+counted once, on the section owner - the member whose name sorts
+first. The owner's km use group statuses, combined per line across
+the members with the same logic as the NPS pair rule (any relay
+clearing the fault clears it, since they trip the same CB):
+
+    COVERED       if any member covers the line
+    EXCEPTION     if every member is an exception
+    UNASSESSABLE  otherwise
+
+The other members' rows carry zero km. Every device row and line row
+names its section_owner, so the zeros are traceable. Coordination
+fields are per relay and are not affected.
 
 Only overhead length is in scope (constr 'OH' or 'SWER'); underground
 lines appear in line rows for completeness but contribute no km.
@@ -332,6 +357,128 @@ def _combine_any(status_a: str, status_b: str) -> str:
     return UNASSESSABLE
 
 
+def _line_statuses(device, line, tier_thresholds: Dict[str, float]) -> Dict[str, str]:
+    """
+    Every status of one line as seen by one device.
+
+    Args:
+        device: Owning Device dataclass.
+        line: Line dataclass.
+        tier_thresholds: Tier name -> reach factor threshold.
+
+    Returns:
+        Dict with damage keys 'ph', 'pg', 'any' and reach tier keys
+        'pri', 'bu', 'sn_bu', each COVERED, EXCEPTION or UNASSESSABLE.
+    """
+    ph_status = _damage_status(line, 'Phase')
+    pg_status = _damage_status(line, 'Ground')
+    statuses = {
+        'ph': ph_status,
+        'pg': pg_status,
+        'any': _combine_any(ph_status, pg_status),
+    }
+    for tier in _TIERS:
+        statuses[tier] = _line_reach_status(
+            device, line, tier, tier_thresholds[tier]
+        )
+    return statuses
+
+
+def _combine_colocated(statuses: List[str]) -> str:
+    """
+    Combine one line's status across relays sharing a CB.
+
+    The relays trip the same breaker, so the line is protected if any
+    of them protects it - the NPS pair logic, widened to n members.
+
+    Args:
+        statuses: One status per co-located relay.
+
+    Returns:
+        COVERED if any member is, EXCEPTION if all members are, else
+        UNASSESSABLE.
+    """
+    if COVERED in statuses:
+        return COVERED
+    if statuses and all(s == EXCEPTION for s in statuses):
+        return EXCEPTION
+    return UNASSESSABLE
+
+
+def _section_owners(feeder_name: str, devices: List) -> Dict[int, str]:
+    """
+    Name the section owner of every device in a feeder.
+
+    Devices sharing a terminal share a section (see module docstring);
+    the member whose name sorts first owns it. A device alone on its
+    terminal owns its own section.
+
+    Args:
+        feeder_name: Feeder name for logging.
+        devices: The feeder's Device dataclasses.
+
+    Returns:
+        Dict of id(device) -> owner device name.
+    """
+    groups: Dict[object, List] = {}
+    for device in devices:
+        groups.setdefault(device.term, []).append(device)
+
+    owners: Dict[int, str] = {}
+    for members in groups.values():
+        names = [str(d.obj.loc_name) for d in members]
+        owner = min(names)
+        for device in members:
+            owners[id(device)] = owner
+
+        if len(members) > 1:
+            line_sets = {
+                frozenset(ln.obj for ln in d.sect_lines if ln is not None)
+                for d in members
+            }
+            if len(line_sets) > 1:
+                # Cannot happen while get_device_sections keys by
+                # terminal; if it ever does, lines held only by a
+                # non-owner lose their km, so say so.
+                logger.warning(
+                    "%s: co-located relays %s have differing sections; "
+                    "km are taken from %s's section only",
+                    feeder_name, ', '.join(sorted(names)), owner,
+                )
+    return owners
+
+
+def _group_statuses(
+    members: List,
+    device_statuses: Dict[int, Dict[object, Dict[str, str]]],
+) -> Dict[object, Dict[str, str]]:
+    """
+    Combine per-line statuses across a co-located relay group.
+
+    Args:
+        members: The Device dataclasses sharing one terminal.
+        device_statuses: id(device) -> line obj -> statuses, as built
+            by _line_statuses.
+
+    Returns:
+        Dict of line obj -> combined statuses (same keys as
+        _line_statuses).
+    """
+    collected: Dict[object, Dict[str, List[str]]] = {}
+    for device in members:
+        for line_obj, statuses in device_statuses[id(device)].items():
+            per_key = collected.setdefault(line_obj, {})
+            for key, status in statuses.items():
+                per_key.setdefault(key, []).append(status)
+    return {
+        line_obj: {
+            key: _combine_colocated(values)
+            for key, values in per_key.items()
+        }
+        for line_obj, per_key in collected.items()
+    }
+
+
 # ---------------------------------------------------------------------
 # Row assembly
 # ---------------------------------------------------------------------
@@ -368,6 +515,7 @@ def build_dashboard_facts(
 
     device_rows: List[Dict] = []
     line_rows: List[Dict] = []
+    colocated_groups = 0
 
     for feeder in feeders:
         feeder_name = str(feeder.obj.loc_name)
@@ -376,11 +524,35 @@ def build_dashboard_facts(
         # project's base path.
         region = pipeline_region
 
+        # Statuses per device per line, then the section owner of
+        # every device. Owners of a co-located group count the group's
+        # section once, using statuses combined across the group.
+        device_statuses = {
+            id(device): {
+                line.obj: _line_statuses(device, line, tier_thresholds)
+                for line in device.sect_lines if line is not None
+            }
+            for device in feeder.devices
+        }
+        owners = _section_owners(feeder_name, feeder.devices)
+
         for device in feeder.devices:
             device_name = str(device.obj.loc_name)
             backup_names = ', '.join(
                 str(d.obj.loc_name) for d in device.us_devices
             )
+            owner_name = owners[id(device)]
+            is_owner = device_name == owner_name
+
+            members = [
+                d for d in feeder.devices
+                if owners[id(d)] == owner_name and d.term == device.term
+            ]
+            if is_owner and len(members) > 1:
+                km_statuses = _group_statuses(members, device_statuses)
+                colocated_groups += 1
+            else:
+                km_statuses = device_statuses[id(device)]
 
             oh_km = 0.0
             no_length = 0
@@ -393,35 +565,31 @@ def build_dashboard_facts(
                 if line is None:
                     continue
 
-                ph_status = _damage_status(line, 'Phase')
-                pg_status = _damage_status(line, 'Ground')
-                any_status = _combine_any(ph_status, pg_status)
-                tier_status = {
-                    tier: _line_reach_status(
-                        device, line, tier, tier_thresholds[tier]
-                    )
-                    for tier in _TIERS
-                }
+                # Line rows always show this relay's own view.
+                own = device_statuses[id(device)][line.obj]
+                ph_status = own['ph']
+                pg_status = own['pg']
+                tier_status = {tier: own[tier] for tier in _TIERS}
 
                 overhead = is_overhead(line)
                 length = line.length if overhead else None
 
-                if overhead:
+                # Only the section owner attributes km.
+                if overhead and is_owner:
+                    counted = km_statuses[line.obj]
                     if length is None:
                         no_length += 1
                     else:
                         oh_km += length
-                        for cls, status in (('ph', ph_status),
-                                            ('pg', pg_status),
-                                            ('any', any_status)):
-                            if status == EXCEPTION:
+                        for cls in ('ph', 'pg', 'any'):
+                            if counted[cls] == EXCEPTION:
                                 dmg_km[cls] += length
-                            elif status == UNASSESSABLE:
+                            elif counted[cls] == UNASSESSABLE:
                                 dmg_un_km[cls] += length
-                        for tier, status in tier_status.items():
-                            if status == EXCEPTION:
+                        for tier in _TIERS:
+                            if counted[tier] == EXCEPTION:
                                 reach_km[tier] += length
-                            elif status == UNASSESSABLE:
+                            elif counted[tier] == UNASSESSABLE:
                                 reach_un_km[tier] += length
 
                 if include_line_rows:
@@ -440,6 +608,7 @@ def build_dashboard_facts(
                         'pri_reach_status': tier_status['pri'],
                         'bu_reach_status': tier_status['bu'],
                         'sn_bu_reach_status': tier_status['sn_bu'],
+                        'section_owner': owner_name,
                     }
                     for tier_keys in _TIERS.values():
                         for key in tier_keys[:4]:
@@ -485,6 +654,14 @@ def build_dashboard_facts(
                 'pri_reach_unassessable_km': round(reach_un_km['pri'], 4),
                 'bu_reach_unassessable_km': round(reach_un_km['bu'], 4),
                 'sn_bu_reach_unassessable_km': round(reach_un_km['sn_bu'], 4),
+                'section_owner': owner_name,
             })
+
+    if colocated_groups:
+        logger.info(
+            "Dashboard facts: %s co-located relay group(s); each "
+            "group's km counted once, on its section owner",
+            colocated_groups,
+        )
 
     return device_rows, line_rows
