@@ -70,6 +70,9 @@ DEVICE_FACT_COLUMNS = [
     # only for relays sharing a CB, whose shared section is counted
     # once on the owner and as zero on the others.
     'section_owner',
+    # Overhead km where phase-fault damage cannot occur (SWER). Not an
+    # exception and not part of the assessed denominator.
+    'ph_dmg_not_applicable_km',
 ]
 
 LINE_FACT_COLUMNS = [
