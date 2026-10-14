@@ -66,6 +66,13 @@ DEVICE_FACT_COLUMNS = [
     # margin of the pair that set each margin (0.3 s relay-relay,
     # 0.1 s with a fuse).
     'ph_coord_required_s', 'pg_coord_required_s',
+    # Device whose row carries this section's km. Differs from device
+    # only for relays sharing a CB, whose shared section is counted
+    # once on the owner and as zero on the others.
+    'section_owner',
+    # Overhead km where phase-fault damage cannot occur (SWER). Not an
+    # exception and not part of the assessed denominator.
+    'ph_dmg_not_applicable_km',
 ]
 
 LINE_FACT_COLUMNS = [
@@ -76,6 +83,8 @@ LINE_FACT_COLUMNS = [
     'ef_rf', 'nps_ef_rf', 'ph_rf', 'nps_ph_rf',
     'bu_ef_rf', 'bu_nps_ef_rf', 'bu_ph_rf', 'bu_nps_ph_rf',
     'sn_bu_ef_rf', 'sn_bu_nps_ef_rf', 'sn_bu_ph_rf', 'sn_bu_nps_ph_rf',
+    # Appended, never inserted (see DEVICE_FACT_COLUMNS).
+    'section_owner',
 ]
 
 DEVICE_COLUMNS = IDENTITY_COLUMNS + DEVICE_FACT_COLUMNS
