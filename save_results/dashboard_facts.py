@@ -74,11 +74,19 @@ otherwise UNASSESSABLE (any UNKNOWN present, or both NO COVERAGE).
 Line status per tier: EXCEPTION if either pair is an exception,
 COVERED if both pairs are covered, else UNASSESSABLE.
 
+SWER lines (constr 'SWER') carry no phase-phase fault, so their phase
+pair has no reach factor. Their line status is the EF pair status
+alone; requiring the phase pair would make every SWER line
+unassessable (Mount Isa: 835 of 863 unassessable km).
+
 Conductor damage reuses the verdicts from cond_dmg_results verbatim:
-FAIL -> exception km, PASS -> ok, anything else (NO DATA, SWER) ->
-unassessable km. "Any damage" is the per-line OR of the two classes,
-never the sum of their kms, so a line failing both counts its length
-once.
+FAIL -> exception km, PASS -> ok, SWER -> not applicable, anything
+else (NO DATA) -> unassessable km. Not-applicable km are reported in
+their own column and belong in neither the exceptions nor the
+assessed denominator. "Any damage" is the per-line OR of the two
+classes, never the sum of their kms, so a line failing both counts its
+length once; a not-applicable class drops out of the OR, so a SWER
+line's any-damage status is its ground status.
 
 Thresholds
 ----------
@@ -104,8 +112,11 @@ ASSUMPTIONS.md entries this module introduces:
       never as an exception.
     * A tier with one pair covered and the other unassessable is
       unassessable for the line - partial assessment is not coverage.
-    * SWER lines are overhead for length purposes; their phase-fault
-      damage verdict ('SWER') lands in unassessable km.
+    * SWER lines are overhead for length purposes. Their reach is
+      assessed on the EF pair alone, and their phase-fault damage
+      verdict ('SWER') is not applicable: reported in
+      ph_dmg_not_applicable_km, excluded from exceptions and from the
+      assessed denominator.
 """
 
 import logging
@@ -147,6 +158,8 @@ _TIERS = {
 COVERED = 'COVERED'
 EXCEPTION = 'EXCEPTION'
 UNASSESSABLE = 'UNASSESSABLE'
+# Phase-fault damage on SWER: no phase-phase fault can occur.
+NOT_APPLICABLE = 'NOT APPLICABLE'
 
 
 # ---------------------------------------------------------------------
@@ -289,7 +302,8 @@ def _line_reach_status(device, line, tier: str, threshold: float) -> str:
         threshold: Tier threshold.
 
     Returns:
-        COVERED, EXCEPTION or UNASSESSABLE.
+        COVERED, EXCEPTION or UNASSESSABLE. On SWER lines, the EF pair
+        status alone (see module docstring).
     """
     factors = getattr(line, 'reach_factors', None)
     if not factors:
@@ -310,6 +324,9 @@ def _line_reach_status(device, line, tier: str, threshold: float) -> str:
         threshold,
     )
 
+    if getattr(line, 'constr', None) == 'SWER':
+        return ef_pair
+
     if EXCEPTION in (ef_pair, ph_pair):
         return EXCEPTION
     if ef_pair == COVERED and ph_pair == COVERED:
@@ -329,13 +346,16 @@ def _damage_status(line, fault_type: str) -> str:
         fault_type: 'Phase' or 'Ground'.
 
     Returns:
-        COVERED (pass), EXCEPTION (fail) or UNASSESSABLE.
+        COVERED (pass), EXCEPTION (fail), NOT_APPLICABLE (phase fault
+        on SWER) or UNASSESSABLE.
     """
     verdict = _evaluate_damage(line, fault_type=fault_type)
     if verdict == 'FAIL':
         return EXCEPTION
     if verdict == 'PASS':
         return COVERED
+    if verdict == 'SWER':
+        return NOT_APPLICABLE
     return UNASSESSABLE
 
 
@@ -349,7 +369,13 @@ def _combine_any(status_a: str, status_b: str) -> str:
 
     Returns:
         EXCEPTION if either is, COVERED if both are, else UNASSESSABLE.
+        A NOT_APPLICABLE class drops out: the result is the other
+        class's status.
     """
+    if status_a == NOT_APPLICABLE:
+        return status_b
+    if status_b == NOT_APPLICABLE:
+        return status_a
     if EXCEPTION in (status_a, status_b):
         return EXCEPTION
     if status_a == COVERED and status_b == COVERED:
@@ -395,9 +421,12 @@ def _combine_colocated(statuses: List[str]) -> str:
         statuses: One status per co-located relay.
 
     Returns:
-        COVERED if any member is, EXCEPTION if all members are, else
-        UNASSESSABLE.
+        COVERED if any member is, EXCEPTION if all members are,
+        NOT_APPLICABLE if all members are (it is a property of the
+        line, so members agree), else UNASSESSABLE.
     """
+    if statuses and all(s == NOT_APPLICABLE for s in statuses):
+        return NOT_APPLICABLE
     if COVERED in statuses:
         return COVERED
     if statuses and all(s == EXCEPTION for s in statuses):
@@ -558,6 +587,7 @@ def build_dashboard_facts(
             no_length = 0
             dmg_km = {'ph': 0.0, 'pg': 0.0, 'any': 0.0}
             dmg_un_km = {'ph': 0.0, 'pg': 0.0, 'any': 0.0}
+            dmg_na_km = {'ph': 0.0, 'pg': 0.0, 'any': 0.0}
             reach_km = {'pri': 0.0, 'bu': 0.0, 'sn_bu': 0.0}
             reach_un_km = {'pri': 0.0, 'bu': 0.0, 'sn_bu': 0.0}
 
@@ -586,6 +616,8 @@ def build_dashboard_facts(
                                 dmg_km[cls] += length
                             elif counted[cls] == UNASSESSABLE:
                                 dmg_un_km[cls] += length
+                            elif counted[cls] == NOT_APPLICABLE:
+                                dmg_na_km[cls] += length
                         for tier in _TIERS:
                             if counted[tier] == EXCEPTION:
                                 reach_km[tier] += length
@@ -655,6 +687,7 @@ def build_dashboard_facts(
                 'bu_reach_unassessable_km': round(reach_un_km['bu'], 4),
                 'sn_bu_reach_unassessable_km': round(reach_un_km['sn_bu'], 4),
                 'section_owner': owner_name,
+                'ph_dmg_not_applicable_km': round(dmg_na_km['ph'], 4),
             })
 
     if colocated_groups:
