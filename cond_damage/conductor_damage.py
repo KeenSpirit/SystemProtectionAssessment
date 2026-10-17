@@ -36,7 +36,7 @@ logger = logging.getLogger(__name__)
 # according to the interval selection:
 # INTERVAL = "full": composed of equidistant step sizes between
 # min fault level and max fault level.
-# INTERVAL = "partial": composed of only the element hisets between
+# INTERVAL = "partial": composed of only the active element hisets between
 # min fault level and max fault level.
 INTERVAL = "partial"
 # When INTERVAL = "full", fault_clear_times evaluates clearing time
@@ -98,34 +98,46 @@ def cond_damage(app: pft.Application, devices: List) -> None:
     """
     Perform conductor damage assessment for selected protection devices.
 
-    Evaluates each line section protected by each device to determine
-    if fault clearing is fast enough to prevent conductor damage. The
-    assessment accumulates energy across all trips in the auto-reclose
-    sequence.
+    For each device, steps through its auto-reclose sequence once for
+    phase faults and once for earth faults. On each trip the elements
+    blocked for that trip are set out of service, the clearing time is
+    found at a set of fault levels across each section line's fault
+    range (see fault_clear_times), and the fault level giving the
+    greatest I2t is taken as that trip's worst case. Each line's total
+    energy is the sum of its per-trip worst cases, which
+    cond_dmg_results compares against the conductor's 1-second thermal
+    withstand (I_thr^2 x 1 s).
 
     Args:
         app: PowerFactory application instance.
-        devices: List of Device dataclasses with populated sect_lines.
+        devices: List of Device dataclasses with populated sect_lines
+            and line fault levels.
 
     Side Effects:
         Populates the following attributes on each Line in sect_lines:
-        - ph_energy: Total phase fault energy (A²s)
-        - ph_clear_time: Phase fault clearing time for worst case (s)
-        - ph_fl: Fault level for worst phase energy (A)
-        - pg_energy: Total ground fault energy (A²s)
-        - pg_clear_time: Ground fault clearing time for worst case (s)
-        - pg_fl: Fault level for worst ground energy (A)
+        - ph_energy: Phase fault I2t summed over all trips (A2s)
+        - ph_clear_time: Clearing time of the trip contributing the
+          most phase energy (s)
+        - ph_fl: Fault level of that trip's worst case (A)
+        - pg_energy, pg_clear_time, pg_fl: The same for earth faults.
+          On a SWER line fed through an isolating transformer, the
+          energy and fault level are line-side values.
+        Energy, clearing time and fault level are all None when any
+        trip produced no clearing time (reported as NO DATA), and the
+        phase values are None on SWER lines (reported as SWER).
+        Leaves each recloser reset to trip 1 and every blocked element
+        restored to its original service state.
 
     Note:
-        The worst case energy is found by evaluating clearing times
-        across the fault current range in steps of 10A, then selecting
-        the fault level that produces maximum I²t.
+        Summing each trip's worst case is conservative: each trip may
+        peak at a different fault level, whereas a real fault has one
+        current for the whole sequence.
 
     Example:
         >>> cond_damage(app, feeder.devices)
         >>> for device in feeder.devices:
         ...     for line in device.sect_lines:
-        ...         print(f"{line.obj.loc_name}: {line.ph_energy} A²s")
+        ...         print(f"{line.obj.loc_name}: {line.ph_energy} A2s")
     """
     fl_step = FL_STEP_AMPS
 
@@ -345,36 +357,49 @@ def fault_clear_times(
     clear_time_cache: Optional[Dict] = None
 ) -> Tuple[Dict[int, Optional[float]], str]:
     """
-    Calculate fault clearing times across the fault current range.
+    Find the fastest clearing time at each sampled fault level.
 
-    Evaluates clearing time at each fault level from minimum to maximum
-    in steps of fl_step. For each fault level, finds the minimum clearing
-    time among all active protection elements.
+    The fault levels sampled depend on INTERVAL:
+    - "partial" (production): the line's minimum and maximum fault
+      level, plus the fault level just below each active RelIoc
+      element's pickup where that lies strictly inside the range. The
+      pickup is converted from the element's measured quantity to fault
+      current first (_hiset_sample_fl).
+    - "full": every fl_step amps from minimum to maximum.
+    At each level the clearing time is the minimum over the active
+    elements: relay operate time plus 80 ms CB time, or fuse total
+    clearing time.
+
+    Fault ranges:
+    - Phase ('2-Phase'/'3-Phase'): min_fl_2ph up to the greater of
+      max_fl_2ph and max_fl_3ph.
+    - Earth ('Phase-Ground'): min_fl_pg up to max_fl_pg, transformed to
+      a device-side '2-Phase' fault when a multi-phase device protects
+      a single-phase SWER line (swer_fault_range).
 
     Args:
         app: PowerFactory application instance.
         device: Device dataclass containing the protection device.
         line: Line dataclass with fault current data.
-        fl_step: Fault level step size in Amperes.
+        fl_step: Step size in amps, used only when INTERVAL is "full".
         fault_type: '2-Phase', '3-Phase', or 'Phase-Ground'.
         prot_elements: Element dict from get_prot_elements for the
             current trip, supplied by the caller so the walk is not
             repeated for every line. None means "look it up here",
             which keeps the function usable standalone; it must be
             None for fuses, which have no sub-elements.
-        clear_time_cache: Per-device cache of element clearing times
-            and instantaneous pickups, supplied by the caller so that
-            values common to every line in a section are evaluated
+        clear_time_cache: Per-device cache of element clearing times,
+            pickups and pickup sample levels, supplied by the caller so
+            that values common to every line in a section are evaluated
             once. None creates a throwaway cache for this call.
 
     Returns:
         Tuple containing:
-        - Dictionary mapping fault levels to minimum clearing times
-        - Actual fault type used (may differ for SWER)
-
-    Note:
-        For phase faults, uses 2-phase minimum and maximum of 2ph/3ph.
-        For earth faults, applies SWER transformation if applicable.
+        - Dict mapping each sampled fault level (A) to its minimum
+          clearing time (s), or None where no element operates. Empty
+          when the line has no fault level data.
+        - The fault type actually used, which is '2-Phase' after a SWER
+          transformation (the levels are then device-side currents).
     """
 
     max_phase_fl = trip_time.max_phase_fl(line)
@@ -421,11 +446,17 @@ def fault_clear_times(
     if INTERVAL == "full":
         fl_interval = range(min_fl, max_fl + 1, fl_step)
     else:
-        hisets = [
-            _element_hiset(element, clear_time_cache) - 1
-            for element in active_elements
-            if element.GetClassName() == 'RelIoc'
-        ]
+        # Sample just below each instantaneous step, but only where the
+        # step lies inside this line's fault range.
+        hisets = []
+        for element in active_elements:
+            if element.GetClassName() != 'RelIoc':
+                continue
+            sample_fl = _hiset_sample_fl(
+                element, fault_type, clear_time_cache
+            )
+            if sample_fl is not None and min_fl < sample_fl < max_fl:
+                hisets.append(sample_fl)
         fl_interval = [min_fl, max_fl] + hisets
 
     # A hiset can coincide with min_fl or max_fl. dict.fromkeys drops
@@ -471,6 +502,47 @@ def _element_hiset(element: Any, cache: Dict) -> float:
     if key not in cache:
         cache[key] = element.GetAttribute("e:cpIpset")
     return cache[key]
+
+
+def _hiset_sample_fl(
+        element: Any,
+        fault_type: str,
+        cache: Dict
+) -> Optional[int]:
+    """
+    Fault level just below a RelIoc element's pickup, cached per device.
+
+    cpIpset is in the element's measured quantity, not fault current:
+    an I2 element set to 1000 A picks up at a 2-phase fault of about
+    1732 A, and an I0 element at three times its setting. The pickup is
+    divided by the element's measured/fault ratio, which is constant
+    for a given element and fault type because get_measured_current is
+    linear in fault level.
+
+    Args:
+        element: PowerFactory RelIoc object.
+        fault_type: Fault type after any SWER transformation.
+        cache: Per-device cache dict, mutated in place.
+
+    Returns:
+        The largest whole fault level (A) at which the element does not
+        yet pick up, or None when the element cannot see this fault
+        type (e.g. NPS on a 3-phase fault) or has no usable pickup.
+    """
+    key = ('hiset_fl', element, fault_type)
+    if key in cache:
+        return cache[key]
+
+    result = None
+    pickup = _element_hiset(element, cache)
+    ratio = current_conversion.get_measured_current(element, 1.0, fault_type)
+    if pickup and pickup > 0 and ratio and ratio > 0:
+        # Largest integer strictly below pickup / ratio. For a pickup
+        # that converts to an exact integer N this is N - 1.
+        result = math.ceil(round(pickup / ratio, 6)) - 1
+
+    cache[key] = result
+    return result
 
 
 def _element_clear_time(
@@ -608,27 +680,41 @@ def worst_case_energy(
         - Clearing time at maximum energy (s)
 
     Note:
-        If transposition is True, the returned fault level is
-        reverse-transformed to the line's actual current.
+        If transposition is True, the fault levels in min_fl_clear_times
+        are device-side currents. Each is reverse-transformed to the
+        line's actual current before its energy is calculated, so both
+        the energy and the returned fault level are on the line side -
+        the same basis as the line's thermal rating they are compared
+        against.
     """
     max_energy = 0
     max_fl = None
     max_clear_time = None
 
+    # Device-side to line-side current factor. 1 unless a SWER
+    # transformation was applied in swer_fault_range.
+    reverse_factor = 1
+    if fault_type == 'Phase-Ground' and transposition:
+        if not line.l_l_volts:
+            # No line voltage to reverse the transformation with. Report
+            # no clearing time so the caller marks the line incomplete
+            # (NO DATA) rather than rating it on device-side current.
+            return 0, None, None
+        reverse_factor = (math.sqrt(3) * device.l_l_volts) / line.l_l_volts
+
     for fl, clear_time in min_fl_clear_times.items():
         if clear_time is None:
             continue
 
-        energy = fl ** 2 * clear_time
+        line_fl = fl * reverse_factor
+        energy = line_fl ** 2 * clear_time
 
         if energy > max_energy:
             max_energy = energy
-            max_fl = fl
+            max_fl = line_fl
             max_clear_time = clear_time
 
-    # Reverse SWER transformation for reporting
-    if fault_type == 'Phase-Ground' and transposition and max_fl is not None:
-        reverse_factor = (math.sqrt(3) * device.l_l_volts) / line.l_l_volts
-        max_fl = round(max_fl * reverse_factor)
+    if max_fl is not None and reverse_factor != 1:
+        max_fl = round(max_fl)
 
     return max_energy, max_fl, max_clear_time
