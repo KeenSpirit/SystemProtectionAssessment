@@ -73,6 +73,7 @@ def begin(
     output_dir: Optional[Path] = None,
     dashboard_dir: Optional[Path] = None,
     dashboard_run_id: Optional[str] = None,
+    dashboard_project_name: Optional[str] = None,
 ) -> Dict[str, Any]:
 
     setup_stdout_logging()
@@ -195,6 +196,9 @@ def begin(
     )
 
     project_name = app.GetActiveProject().loc_name
+    # The batch runner passes a region-qualified name when two projects
+    # share one (#22); standalone runs use the plain project name.
+    fact_project_name = dashboard_project_name or str(project_name)
 
     # Dashboard fact output A failed write is logged and reported as None,
     # so the batch manifest can distinguish "assessed, dashboard missing"
@@ -206,14 +210,14 @@ def begin(
             dashboard_result = dashboard_writer.write_dashboard_facts(
                 dashboard_dir,
                 run_id,
-                str(project_name),
+                fact_project_name,
                 region,
                 feeders,
             )
         except Exception:
             logger.exception(
                 "Dashboard fact write failed for %s; workbook results "
-                "are unaffected", project_name
+                "are unaffected", fact_project_name
             )
 
     logger.info("System Protection Assessment complete")
