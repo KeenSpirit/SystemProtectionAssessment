@@ -19,14 +19,6 @@ to PROD. Commits should reference the issue number being fixed.
 
 All resolved bugs should be added to unit testing to prevent regression.
 
-## Feature Requests
-
-To request new features or asset type support:
-
-1. Raise an issue on the tracker
-2. Apply the `enhancement` label
-3. Describe the use case and expected behaviour
-
 ## Code Standards
 
 ### Line Length Limits

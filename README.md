@@ -8,9 +8,8 @@ This repository now holds both ways of running the assessment:
 
 * **Batch** — the final stage of the IPStoPFMastering pipeline,
   assessing every radial feeder in each of ~80 projects, headless.
-* **Interactive** — run from within PowerFactory by an engineer, who
+* **Interactive** — run from within PowerFactory by a user, who
   picks a study or tool and then the feeders and devices to assess.
-  This is the former `protection_assessment` script, merged in.
 
 ```
 IPStoPFMastering (ips_to_pf_mastering.py)
@@ -300,7 +299,7 @@ in the filename.
 
 ---
 
-## Failure handling contract
+## Failure handling
 
 | Event | Batch | Interactive |
 |---|---|---|
