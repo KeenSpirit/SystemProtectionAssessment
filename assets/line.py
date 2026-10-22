@@ -1,250 +1,366 @@
 """
-Assessment criteria: the single source of pass/fail rules.
+Distribution line assets model for protection assessment.
 
-Every threshold, regional assumption and verdict rule that decides
-how a result is judged lives here, so the Excel workbook, the
-dashboard facts and (once grafted) the interactive colour map all
-apply the same rules. Change a standard here and every output moves
-together.
-
-This module is pure: no PowerFactory API calls beyond reading the
-line type name, no pandas, no I/O. It can be imported and tested
-offline.
-
-Regions:
-    SEQ, NORTHERN, SOUTHERN: Values returned by obtain_region.
-    is_seq, is_regional: Region tests. Use these rather than comparing
-        region strings, so a renamed or added region fails loudly in
-        one place instead of silently taking an else branch.
-
-Fault impedance:
-    earth_fault_resistance: Minimum earth fault resistance assumed for
-        a region and construction.
-
-Reach:
-    primary_rf_threshold, BACKUP_RF_THRESHOLD, SN_BACKUP_RF_THRESHOLD.
-
-Coordination:
-    RELAY_RELAY_MARGIN_S, FUSE_PAIR_MARGIN_S, required_margin.
-
-Conductor damage:
-    is_swer_line, allowable_energy, evaluate_damage and the verdict
-    strings PASS, FAIL, NO_DATA, SWER.
+A line represents a network conductor section with fault current data
+and conductor damage assessment results.
 """
 
-from typing import Any, Optional
+from dataclasses import dataclass
+from typing import Optional, Dict,Union, TYPE_CHECKING
 
-# =============================================================================
-# REGIONS
-# =============================================================================
+import assets.utils as utils
+import criteria
+import logging
 
-SEQ = 'SEQ'
-NORTHERN = 'Northern'
-SOUTHERN = 'Southern'
+logger = logging.getLogger(__name__)
 
-REGIONAL_REGIONS = frozenset({NORTHERN, SOUTHERN})
-KNOWN_REGIONS = frozenset({SEQ}) | REGIONAL_REGIONS
+if TYPE_CHECKING:
+    from pf_config import pft
 
+from importlib import reload
+reload(utils)
 
-def is_seq(region: str) -> bool:
-    """True for the SEQ (Energex) network region."""
-    return region == SEQ
-
-
-def is_regional(region: str) -> bool:
-    """True for a Regional (Ergon) network region."""
-    return region in REGIONAL_REGIONS
-
-
-def _require_known(region: str) -> None:
-    """Raise ValueError naming the known regions if region is not one."""
-    if region not in KNOWN_REGIONS:
-        raise ValueError(
-            f"Unknown network region {region!r}; expected one of "
-            f"{sorted(KNOWN_REGIONS)}. Add it to criteria.py."
-        )
-
-
-# =============================================================================
-# FAULT IMPEDANCE
-# =============================================================================
-
-# Minimum earth fault resistance in ohms. SEQ assumes a bolted fault
-# everywhere. Regional assumes 50 ohms on overhead construction and
-# 10 ohms elsewhere. "Elsewhere" includes SWER and any terminal whose
-# construction is undetermined: this preserves the behaviour of the
-# original fault_impedance.get_terminal_pg_fault, which tested only
-# for 'OH'.
-SEQ_EF_RESISTANCE_OHM = 0
-REGIONAL_OH_EF_RESISTANCE_OHM = 50
-REGIONAL_OTHER_EF_RESISTANCE_OHM = 10
-
-
-def earth_fault_resistance(region: str, constr: Optional[str]) -> int:
+@dataclass
+class Line:
     """
-    Minimum earth fault resistance assumed at a location.
+    Represents a distribution line with fault current and energy data.
+
+    The Line dataclass captures both the physical characteristics of a
+    conductor and the fault study results used for conductor damage assessment.
+
+    Core Attributes (set at initialization):
+        obj: The PowerFactory ElmLne object
+        phases: Number of phases (1, 2, or 3)
+        l_l_volts: Line-to-line voltage in kV
+        line_type: Conductor type description (e.g., "AAC/S 7/4.50")
+        thermal_rating: Thermal current rating in Amps, or "NA" for cables
+        length: Circuit length in km (PF 'dline'), or None if unreadable
+        constr: Construction class - "OH", "UG" or "SWER"
+
+    Maximum Fault Currents (populated by fault study):
+        max_fl_3ph: Maximum 3-phase fault current (A)
+        max_fl_2ph: Maximum 2-phase fault current (A)
+        max_fl_pg: Maximum phase-ground fault current (A)
+
+    Minimum Fault Currents (populated by fault study):
+        min_fl_3ph: Minimum 3-phase fault current (A)
+        min_fl_2ph: Minimum 2-phase fault current (A)
+        min_fl_pg: Minimum phase-ground fault current (A)
+
+    System Normal Minimum Fault Currents:
+        min_sn_fl_2ph: Minimum system normal 2-phase fault current (A)
+        min_sn_fl_pg: Minimum system normal phase-ground fault current (A)
+
+    Energy Calculations (populated during conductor damage analysis):
+        ph_energy: Phase fault let-through energy (I²t in A²s)
+        ph_clear_time: Phase fault clearing time (seconds)
+        ph_fl: Fault level used for phase energy calculation (A)
+        pg_energy: Ground fault let-through energy (I²t in A²s)
+        pg_clear_time: Ground fault clearing time (seconds)
+        pg_fl: Fault level used for ground energy calculation (A)
+
+    Example:
+        >>> line = initialise_line_dataclass(elm_lne)
+        >>> print(f"Line: {line.obj.loc_name}, Type: {line.line_type}")
+        >>> print(f"Thermal rating: {line.thermal_rating}A")
+        >>> # After conductor damage analysis:
+        >>> if line.ph_energy:
+        ...     allowable = line.thermal_rating ** 2
+        ...     status = "PASS" if line.ph_energy <= allowable else "FAIL"
+    """
+    # Core identification - always required
+    obj: "pft.ElmLne"
+    phases: int
+    l_l_volts: float
+    line_type: str
+    thermal_rating: Union[float, str]  # Can be "NA" for cables
+    length: Optional[float] = None
+    constr: Optional[str] = None
+
+    # Maximum fault currents - populated by fault study
+    max_fl_3ph: Optional[float] = None
+    max_fl_2ph: Optional[float] = None
+    max_fl_pg: Optional[float] = None
+
+    # Minimum fault currents - populated by fault study
+    min_fl_3ph: Optional[float] = None
+    min_fl_2ph: Optional[float] = None
+    min_fl_pg: Optional[float] = None
+
+    # Minimum system normal fault currents
+    min_sn_fl_2ph: Optional[float] = None
+    min_sn_fl_pg: Optional[float] = None
+
+    # Energy calculations - populated during conductor damage analysis
+    ph_energy: Optional[float] = None
+    ph_clear_time: Optional[float] = None
+    ph_fl: Optional[float] = None
+    pg_energy: Optional[float] = None
+    pg_clear_time: Optional[float] = None
+    pg_fl: Optional[float] = None
+
+    # Reach factors - populated by populate_line_reach_factors after
+    # line fault levels exist (pipeline stage 12).
+    reach_factors: Optional[Dict[str, Union[float, str]]] = None
+
+
+def initialise_line_dataclass(
+    elmlne: "pft.ElmLne",
+    region: str,
+    oh_lines: Optional[set] = None,
+) -> Optional[Line]:
+    """
+    Initialize a Line dataclass from a PowerFactory ElmLne object.
+
+    Extracts conductor information including phase count, voltage level,
+    conductor type, and thermal rating from the line and its type definition.
 
     Args:
-        region: Network region from obtain_region.
-        constr: Construction class at the location: 'OH', 'UG', 'SWER'
-            or None if undetermined.
+        elmlne: The PowerFactory ElmLne object
+        region: Network region ('SEQ', 'Northern', 'Southern'), used to
+            resolve the dline length units.
 
     Returns:
-        Fault resistance in ohms. Termination dataclasses carry
-        minimum earth fault levels for 0, 10 and 50 ohms only, so a
-        value outside that set needs a matching field first.
+        Initialized Line dataclass, or None if elmlne is None.
 
-    Raises:
-        ValueError: If the region is not known.
+    Note:
+        For cable systems (TypCabsys), thermal_rating returns "NA" as
+        cable thermal limits are handled differently.
+
+    Example:
+        >>> elm_lne = feeder.GetObjs("ElmLne")[0]
+        >>> line = initialise_line_dataclass(elm_lne)
+        >>> print(f"{line.obj.loc_name}: {line.line_type}")
     """
-    _require_known(region)
-    if is_seq(region):
-        return SEQ_EF_RESISTANCE_OHM
-    if constr == 'OH':
-        return REGIONAL_OH_EF_RESISTANCE_OHM
-    return REGIONAL_OTHER_EF_RESISTANCE_OHM
+    if elmlne is None:
+        return None
+
+    line_type, thermal_rating = _get_conductor_info(
+        elmlne, oh_lines=oh_lines
+    )
+
+    return Line(
+        obj=elmlne,
+        phases=_get_phases(elmlne),
+        l_l_volts=_get_voltage(elmlne),
+        line_type=line_type,
+        thermal_rating=thermal_rating,
+        length=_get_length(elmlne, region),
+        constr=determine_line_const(elmlne),
+    )
 
 
-# =============================================================================
-# REACH FACTOR THRESHOLDS
-# =============================================================================
-
-# A reach factor at or above the threshold is covered.
-PRIMARY_RF_THRESHOLD = {
-    SEQ: 2.0,
-    NORTHERN: 1.7,
-    SOUTHERN: 1.7,
-}
-BACKUP_RF_THRESHOLD = 1.3
-SN_BACKUP_RF_THRESHOLD = 1.5
-
-
-def primary_rf_threshold(region: str) -> float:
+def determine_line_const(line: "pft.ElmLne") -> str:
     """
-    Primary reach factor threshold for a region.
+    Determine the construction class of a line.
 
     Args:
-        region: Network region from obtain_region.
+        line: PowerFactory ElmLne object.
 
     Returns:
-        Minimum acceptable primary reach factor.
-
-    Raises:
-        ValueError: If the region is not known.
+        One of "OH", "UG", "SWER".
     """
-    _require_known(region)
-    return PRIMARY_RF_THRESHOLD[region]
 
-
-# =============================================================================
-# COORDINATION MARGINS
-# =============================================================================
-
-# Required coordination margins in seconds. A relay-relay pair needs
-# 300 ms; any pair with a fuse on either side (fuse-fuse, fuse primary
-# with relay backup, relay primary with fuse backup) needs 100 ms.
-# Times compared: relay trip time (no switch operate time) for every
-# relay; fuse total clear time, except a backup fuse behind a relay
-# primary, which uses minimum melt. See required_margin.
-RELAY_RELAY_MARGIN_S = 0.3
-FUSE_PAIR_MARGIN_S = 0.1
-
-
-def required_margin(primary_is_fuse: bool, backup_is_fuse: bool) -> float:
-    """
-    Minimum coordination margin for a primary/backup pair.
-
-    Args:
-        primary_is_fuse: True when the primary device is a fuse.
-        backup_is_fuse: True when the backup device is a fuse.
-
-    Returns:
-        RELAY_RELAY_MARGIN_S for two relays, otherwise
-        FUSE_PAIR_MARGIN_S.
-    """
-    if primary_is_fuse or backup_is_fuse:
-        return FUSE_PAIR_MARGIN_S
-    return RELAY_RELAY_MARGIN_S
-
-
-# =============================================================================
-# CONDUCTOR DAMAGE
-# =============================================================================
-
-PASS = "PASS"
-FAIL = "FAIL"
-NO_DATA = "NO DATA"
-SWER = "SWER"
-
-
-def is_swer_line(line: Any) -> bool:
-    """
-    True for a SWER line (line type name contains 'SWER').
-
-    Args:
-        line: Line dataclass; its obj is the PowerFactory ElmLne.
-
-    Returns:
-        True if the line's type name contains 'SWER'. False if it
-        does not, or if the line has no type.
-    """
     try:
-        line_type = line.obj.typ_id
-        return bool(line_type) and 'SWER' in line_type.loc_name
+        line_type = line.typ_id
+        if line_type is not None and 'SWER' in line_type.loc_name:
+            return "SWER"
     except AttributeError:
-        return False
+        pass
+
+    try:
+        if line.IsCable() or "CABLE" in line.loc_name:
+            return "UG"
+        if line.typ_id is not None and line.typ_id.HasAttribute("cohl_"):
+            return "UG"
+    except AttributeError:
+        pass
+
+    return "OH"
 
 
-def allowable_energy(thermal_rating: Any) -> Optional[float]:
+def is_overhead(line: Line) -> bool:
     """
-    Conductor thermal withstand energy in A²s.
+    Report whether a line is overhead construction.
 
-    The 1-second thermal rating I_thr implies a withstand energy of
-    I_thr² × 1 s (from I²t = constant).
+    SWER lines are overhead, so both "OH" and "SWER" return True.
+    This is the single definition of "overhead" for length
+    aggregation; testing ``constr == "OH"`` elsewhere would silently
+    drop SWER km from every regional feeder.
 
     Args:
-        thermal_rating: Conductor 1-second thermal rating in Amperes.
-            May be "NA" for cable systems.
+        line: Line dataclass with constr populated.
 
     Returns:
-        Withstand energy in A²s, or None if the rating is missing or
-        non-numeric.
+        True for overhead (including SWER) construction.
     """
+    return line.constr in ("OH", "SWER")
+
+
+DLINE_TO_KM = {
+    criteria.SEQ: 0.001,
+    criteria.NORTHERN: 1.0,
+    criteria.SOUTHERN: 1.0,
+}
+
+# Regions with no unit convention, warned about once each. Without this
+# the message would repeat for every line in the project
+_UNKNOWN_REGION_WARNED: set = set()
+
+
+def _get_length(line: "pft.ElmLne", region: str) -> Optional[float]:
+    """
+    Read a line's circuit length in km.
+
+    An unrecognised region yields None rather than raising: a missing
+    unit convention should cost the length metrics, not the conductor
+    damage and coordination assessment for the whole project. None
+    propagates as an unreadable length, which the fact layer counts in
+    oh_lines_no_length and excludes from every km total, so the
+    affected project's km figures come out blank rather than wrong.
+
+    Args:
+        line: PowerFactory ElmLne object.
+        region: 'SEQ', 'Northern' or 'Southern', from
+            pf_protection_helper.obtain_region.
+
+    Returns:
+        Length in km, or None if the region has no unit convention or
+        the attribute is missing or non-numeric.
+    """
+    scale = DLINE_TO_KM.get(region)
+    if scale is None:
+        if region not in _UNKNOWN_REGION_WARNED:
+            _UNKNOWN_REGION_WARNED.add(region)
+            logger.error(
+                "No dline unit convention is defined for region %r "
+                "(known: %s). Line lengths are unavailable for this "
+                "project, so every km-based dashboard metric will be "
+                "empty. Add the region's convention to DLINE_TO_KM in "
+                "assets/line.py - do not assume one, as the two fleets "
+                "differ by a factor of a thousand.",
+                region, sorted(DLINE_TO_KM),
+            )
+        return None
+
     try:
-        return float(thermal_rating) ** 2
-    except (ValueError, TypeError):
+        return float(line.GetAttribute("dline")) * scale
+    except (AttributeError, TypeError, ValueError):
         return None
 
 
-def evaluate_damage(line: Any, fault_type: str) -> str:
+def _get_phases(line: "pft.ElmLne") -> int:
     """
-    Conductor damage verdict for a line section.
+    Get number of phases from line construction type.
 
-    Compares the let-through energy accumulated across all trips of
-    the auto-reclose sequence (populated by cond_damage) against the
-    conductor's thermal withstand energy.
+    Handles different line type definitions:
+    - TypGeo: Tower geometry definition
+    - TypCabsys: Cable system definition
+    - TypLne: Standard line type definition
 
     Args:
-        line: Line dataclass with accumulated energy and thermal data.
-        fault_type: 'Phase' or 'Ground'.
+        line: PowerFactory ElmLne object
 
     Returns:
-        PASS if within withstand, FAIL if exceeded, NO_DATA if the
-        rating is missing or no energy was computed, SWER for a phase
-        fault on a SWER line (not applicable).
+        Number of phases (1, 2, or 3)
+
+    Raises:
+        TypeError: If line type is not a recognized construction type
     """
-    if fault_type == 'Phase' and is_swer_line(line):
-        return SWER
+    construction = line.typ_id.GetClassName()
 
-    if fault_type == 'Phase':
-        energy = line.ph_energy
+    if construction == "TypGeo":
+        return int(line.typ_id.xy_c[0][0])
+    elif construction == "TypCabsys":
+        return int(line.typ_id.GetAttribute("nphas")[0])
+    elif construction == "TypLne":
+        return int(line.typ_id.GetAttribute("nlnph"))
     else:
-        energy = line.pg_energy
+        raise TypeError(f"{construction}: Unhandled construction type")
 
-    allowable = allowable_energy(line.thermal_rating)
 
-    if allowable is None or not energy:
-        return NO_DATA
-    if energy > allowable:
-        return FAIL
-    return PASS
+def _get_voltage(line: "pft.ElmLne") -> float:
+    """
+    Get line-to-line operating voltage from connected terminals.
+
+    Args:
+        line: PowerFactory ElmLne object
+
+    Returns:
+        Nominal voltage in kV, or 0.0 if no terminal found
+    """
+    for term in line.GetConnectedElements():
+        try:
+            return term.uknom
+        except AttributeError:
+            pass
+    return 0.0
+
+
+def _match_conductor(line_type: str, cond_rating_dict: dict):
+    """
+    Find the ratings row for a PowerFactory conductor type name.
+
+    Type names are '<conductor>_<voltage>' (e.g. '3/2.75 SC/GZ_22kV').
+    An exact match on the part before the last '_' wins. Otherwise the
+    longest table name contained in the type name is used, so a short
+    name ('7/1.75 HDBC', 'Box') can never shadow a longer one
+    ('37/1.75 HDBC', 'Boxing') regardless of row order.
+    """
+    base = line_type.rsplit("_", 1)[0].strip()
+    if base in cond_rating_dict:
+        return cond_rating_dict[base]
+    matches = [cond for cond in cond_rating_dict if cond and cond in line_type]
+    if not matches:
+        return None
+    return cond_rating_dict[max(matches, key=len)]
+
+
+def _get_conductor_info(
+    line: "pft.ElmLne",
+    oh_lines: Optional[set] = None,
+) -> tuple:
+    """
+    Get conductor type name and thermal rating.
+
+    For overhead lines, extracts the conductor type
+    name and obtains 1-second thermal rating from csv file.
+
+    For underground lines, extracts the conductor type
+    name and 1-second thermal rating from PowerFactory.
+
+    For cable systems, returns "NA"
+    for both values.
+
+    Args:
+        line: PowerFactory ElmLne object
+
+    Returns:
+        Tuple of (line_type: str, thermal_rating: float or "NA")
+    """
+    construction = line.typ_id.GetClassName()
+
+    line_type = "NA"
+    thermal_rating = "NA"
+
+    cond_rating_dict = utils.conductors_properties()
+
+    if oh_lines is not None and line in oh_lines:
+        typ_con = line.GetAttribute("e:pCondCir")
+        line_type = typ_con.loc_name
+        data = _match_conductor(line_type, cond_rating_dict)
+        if data is not None:
+            thermal_rating = float(data[0]) * 1000
+    else:
+        if construction == "TypGeo":
+            typ_con = line.GetAttribute("e:pCondCir")
+            line_type =  typ_con.loc_name
+            thermal_rating = round(typ_con.GetAttribute("e:Ithr"), 3) * 1000
+        elif construction == "TypLne":
+            typ_con = line.GetAttribute("e:typ_id")
+            line_type = typ_con.loc_name
+            thermal_rating = round(typ_con.GetAttribute("e:Ithr"), 3) * 1000
+        else:
+            # Cable systems - thermal rating handled differently
+            pass
+    return line_type, thermal_rating

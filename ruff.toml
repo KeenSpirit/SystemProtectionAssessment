@@ -1,0 +1,19 @@
+# Ruff configuration.
+#
+# Kept deliberately small: pyflakes and syntax/statement errors, plus
+# the one architectural rule the merge depends on. The rule list is
+# pinned rather than left to ruff's defaults, which vary by version.
+# Widen it on purpose, not by accident.
+
+line-length = 88
+
+[lint]
+select = ["E4", "E7", "E9", "F", "TID251"]
+
+# The batch path runs headless and must never block on a dialog, so
+# tkinter may only be imported inside the interactive frontend.
+[lint.flake8-tidy-imports.banned-api]
+"tkinter".msg = "GUI code belongs in interactive/ only (batch path is headless)"
+
+[lint.per-file-ignores]
+"interactive/**" = ["TID251"]
