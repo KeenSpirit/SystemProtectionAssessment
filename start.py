@@ -222,7 +222,7 @@ def _run_selection(app: pft.Application) -> None:
         UserCancelled: If the user presses Exit in any dialog.
         AssessmentError: If the project cannot be assessed.
     """
-    from interactive import study_inputs
+    from interactive import colour_maps, study_inputs
     from interactive.study_selection import Study, get_study_selection
     from interactive.tools import (
         curve_labels, find_substation, model_checks, open_points
@@ -280,10 +280,10 @@ def _run_selection(app: pft.Application) -> None:
             "Protection relay coordination plots have not been merged into "
             "this script yet; none were drawn."
         )
-    app.PrintWarn(
-        "Colour maps have not been merged into this script yet; none were "
-        "applied."
-    )
+    if selection.study is Study.ALL_RELAYS:
+        colour_maps.colour_map(
+            app, region, feeders, selection.conductor_damage
+        )
 
     sr.save_dataframe(
         app, region, options.study_selections, inputs.external_grid,

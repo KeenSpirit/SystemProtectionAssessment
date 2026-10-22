@@ -11,6 +11,8 @@ Modules:
     pf_output: Route core logging to the PowerFactory output window.
     study_selection: First dialog - which study or tool to run.
     study_inputs: Feeder, external grid and device selection dialogs.
+    colour_maps: Diagram colouring schemes for reach and conductor
+        damage results.
 
 Subpackages:
     tools: Self-contained utilities (project finder, open point
