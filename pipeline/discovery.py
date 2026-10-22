@@ -8,11 +8,14 @@ Nothing here prompts the user; the interactive path performs its own
 selection and then calls the conversion function below.
 
 Functions:
+    classify_feeders: Radial feeder names and mesh feeder objects.
     mesh_feeder_check: Radial feeder names, excluding mesh feeders.
     get_active_grids: In-service external grids with a connection.
     get_grid_data: External grid fault level data from the source
         z-data workbooks (batch path).
     get_feeders_devices: Protection devices mapped to feeders/grids.
+    get_feeders_switches: Feeder heads and switches as stand-in
+        devices, for a study with no relays configured.
     chk_empty_fdrs: Drop feeders that have no protection devices.
     cvrt_fdr_to_dataclass: PowerFactory selections to dataclasses.
 """
@@ -22,6 +25,7 @@ from typing import Any, Dict, List, Tuple
 
 from pf_config import pft
 import assets as ast
+import criteria
 from devices import fuses
 from relays import elements
 from source_z_data import load_source_z_data
@@ -30,19 +34,21 @@ from pipeline.errors import AssessmentError
 logger = logging.getLogger(__name__)
 
 
-def mesh_feeder_check(app) -> Tuple[List[str], bool]:
+def classify_feeders(app: pft.Application) -> Tuple[List[str], List]:
     """
-    Filter feeders to exclude mesh configurations.
+    Split the in-service feeders into radial and mesh.
 
-    Identifies radial feeders by checking external grid
-    connectivity. Mesh feeders (connected to grids at both ends)
-    are excluded. Also detects lines out of service which may
-    affect feeder topology.
+    A feeder is meshed when an in-service external grid is reachable
+    both upstream and downstream of its cubicle. Feeders with no
+    elements, or out of service, are ignored.
+
+    Args:
+        app: PowerFactory application instance.
 
     Returns:
         Tuple containing:
-            - radial_list: Sorted list of radial feeder names.
-            - mesh_feeder_check: True if any lines are out of service.
+            - radial_list: Sorted radial feeder names.
+            - mesh_list: Mesh feeder (ElmFeeder) objects.
     """
     logger.info("Checking for radial feeders...")
     grids = [
@@ -71,11 +77,23 @@ def mesh_feeder_check(app) -> Tuple[List[str], bool]:
     else:
         logger.warning(" No radial feeders detected.")
 
-    mesh_feeder_check = False
-    if mesh_list:
-        mesh_feeder_check = True
+    return sorted(radial_list), mesh_list
 
-    return sorted(radial_list), mesh_feeder_check
+
+def mesh_feeder_check(app) -> Tuple[List[str], bool]:
+    """
+    Filter feeders to exclude mesh configurations.
+
+    Args:
+        app: PowerFactory application instance.
+
+    Returns:
+        Tuple containing:
+            - radial_list: Sorted list of radial feeder names.
+            - mesh_feeder_check: True if any mesh feeder was found.
+    """
+    radial_list, mesh_list = classify_feeders(app)
+    return radial_list, bool(mesh_list)
 
 
 def get_active_grids(app: pft.Application) -> List:
@@ -242,6 +260,92 @@ def get_feeders_devices(app, radial_list: List[str]
                 break
 
     return feeder_device_dict, grid_device_dict
+
+
+# Switch name prefixes that mark a Regional switch as a protection
+# device location (reclosers / sectionalisers and EDO fuses).
+_REGIONAL_RELAY_SWITCH_PREFIXES = [
+    '(ACR/SECT/LBS)', '(CIRCUIT RECL)',
+    '(CIRCUIT RECLOSER)', '(OIL CIRCUIT RECL)'
+]
+_REGIONAL_FUSE_SWITCH_PREFIXES = ['(EDO FUSE)']
+
+
+def get_feeders_switches(
+    app: pft.Application, feeder_list: List[str], region: str
+) -> Tuple[Dict[str, list], Dict[Any, list]]:
+    """
+    Get the closed switches on each feeder, for a no-relay study.
+
+    Used when protection is not modelled: each feeder's head (the
+    ElmFeeder) and its closed switches stand in for the protection
+    devices. Regional models only count switches named as reclosers,
+    sectionalisers or EDO fuses; SEQ models count every closed
+    StaSwitch.
+
+    Args:
+        app: PowerFactory application instance.
+        feeder_list: Feeder names.
+        region: Network region ('SEQ', 'Northern', 'Southern').
+
+    Returns:
+        Tuple containing:
+            - feeders_switches: Feeder name to [ElmFeeder, switches...].
+              SEQ switches are sorted by name.
+            - bu_devices: Empty dict (no backup devices without
+              relays).
+    """
+    elm_coups = [
+        switch for switch in app.GetCalcRelevantObjects("*.ElmCoup")
+        if switch.on_off == 1
+    ]
+    sta_switches = [
+        switch for switch
+        in app.GetCalcRelevantObjects("*.StaSwitch")
+        if switch.on_off == 1
+    ]
+
+    if criteria.is_regional(region):
+        relay_switches = [
+            switch for switch in elm_coups + sta_switches
+            if any(
+                substring in switch.loc_name
+                for substring in _REGIONAL_RELAY_SWITCH_PREFIXES
+            )
+        ]
+        line_fuse_switches = [
+            switch for switch in sta_switches
+            if any(
+                substring in switch.loc_name
+                for substring in _REGIONAL_FUSE_SWITCH_PREFIXES
+            )
+        ]
+        all_switches = relay_switches + line_fuse_switches
+    else:
+        all_switches = sta_switches
+
+    feeders_switches = {}
+    for feeder in feeder_list:
+        feeder_elm = app.GetCalcRelevantObjects(feeder + ".ElmFeeder")[0]
+        feeder_terms = feeder_elm.GetObjs('ElmTerm')
+        feeder_coups = feeder_elm.GetObjs('ElmCoup')
+        switch_list = [
+            switch for switch in all_switches
+            if (
+                switch.GetClassName() == 'StaSwitch'
+                and switch.fold_id.cterm in feeder_terms
+            ) or (
+                switch.GetClassName() == 'ElmCoup'
+                and switch in feeder_coups
+            )
+        ]
+
+        if criteria.is_seq(region):
+            switch_list.sort(key=lambda switch: switch.loc_name)
+
+        feeders_switches[feeder] = [feeder_elm] + switch_list
+
+    return feeders_switches, {}
 
 
 def chk_empty_fdrs(app, fdrs_devices: Dict) -> None:

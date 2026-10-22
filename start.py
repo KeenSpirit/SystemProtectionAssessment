@@ -2,15 +2,19 @@
 Entry points for the System Protection Assessment.
 
 begin() is the headless batch entry point, called per project by
-batch_relay_update inside helper.app_manager. The __main__ block runs
-the same path standalone from within PowerFactory.
+batch_relay_update inside helper.app_manager. main() is the interactive
+entry point, run from within PowerFactory by the __main__ block: the
+user picks a study or tool, then the feeders, grid data and devices.
 
 All discovery and analysis lives in the GUI-free pipeline package;
 this module only wires the stages together and writes the outputs.
+The interactive package (tkinter) is imported inside main() only, so
+the batch path never loads it.
 
 Functions:
     setup_stdout_logging: Ensure progress logging reaches stdout.
     begin: Assess every radial feeder in the active project.
+    main: Interactive study selection and assessment.
 """
 
 import time
@@ -28,13 +32,13 @@ from save_results import dashboard_writer
 from pipeline import discovery
 from pipeline.errors import AssessmentError
 from pipeline.run import AssessmentOptions, run_assessment
-from pipeline.study_case import activate_study_case
+from pipeline.study_case import activate_study_case, cycle_all_grids
 
 logger = logging.getLogger(__name__)
 
 # Re-exported so the batch layer's `except start.AssessmentError`
 # handling is unaffected by the move to pipeline.errors.
-__all__ = ["AssessmentError", "begin", "setup_stdout_logging"]
+__all__ = ["AssessmentError", "begin", "main", "setup_stdout_logging"]
 
 
 def setup_stdout_logging(level: int = logging.INFO) -> None:
@@ -179,6 +183,114 @@ def begin(
     }
 
 
+def main(app: pft.Application) -> None:
+    """
+    Interactive entry point: run the study or tool the user selects.
+
+    Must run inside helper.app_manager. Core progress and warnings are
+    routed to the PowerFactory output window for the duration.
+
+    Args:
+        app: PowerFactory application instance.
+
+    Side Effects:
+        Depending on the selection: prints tool results, writes the
+        user's grid data to the external grids, and saves the results
+        workbook to the per-user output folder.
+    """
+    # Imported here so the batch path never imports tkinter.
+    from interactive.dialogs import UserCancelled
+    from interactive.pf_output import attached
+
+    with attached(app):
+        try:
+            _run_selection(app)
+        except UserCancelled:
+            app.PrintPlain("User terminated script.")
+        except AssessmentError as exc:
+            app.PrintError(str(exc))
+
+
+def _run_selection(app: pft.Application) -> None:
+    """
+    Show the study selection dialog and carry out the choice.
+
+    Args:
+        app: PowerFactory application instance.
+
+    Raises:
+        UserCancelled: If the user presses Exit in any dialog.
+        AssessmentError: If the project cannot be assessed.
+    """
+    from interactive import study_inputs
+    from interactive.study_selection import Study, get_study_selection
+    from interactive.tools import (
+        curve_labels, find_substation, model_checks, open_points
+    )
+
+    selection = get_study_selection(app)
+
+    if selection.study is Study.FIND_PROJECT:
+        find_substation.run(app)
+        return
+
+    project = app.GetActiveProject()
+    if project is None:
+        app.PrintWarn("No Active Project, Ending Script")
+        return
+
+    if selection.study is Study.OPEN_POINTS:
+        open_points.run(app)
+        return
+
+    if selection.study is Study.CURVE_LABELS:
+        curve_labels.update_curve_labels(app, project)
+        return
+
+    if selection.study is Study.LEGACY:
+        app.PrintWarn(
+            "The legacy fault level study has not been merged into this "
+            "script yet. Please run it from protection_assessment."
+        )
+        return
+
+    # Fault level study, with or without relays modelled
+    study_case = activate_study_case(app, keep_active=True)
+    model_checks.run(app)
+
+    region = helper.obtain_region(app)
+    inputs = study_inputs.get_input(app, region, selection.study)
+
+    feeders = discovery.cvrt_fdr_to_dataclass(
+        app, inputs.feeders_devices, inputs.bu_devices
+    )
+    cycle_all_grids(app, study_case)
+
+    options = AssessmentOptions(
+        conductor_damage=selection.conductor_damage,
+        coordination=selection.coordination,
+        selected=inputs.selected,
+    )
+    feeders = run_assessment(
+        app, region, feeders, inputs.external_grid, options
+    )
+
+    if selection.coordination_plot:
+        app.PrintWarn(
+            "Protection relay coordination plots have not been merged into "
+            "this script yet; none were drawn."
+        )
+    app.PrintWarn(
+        "Colour maps have not been merged into this script yet; none were "
+        "applied."
+    )
+
+    sr.save_dataframe(
+        app, region, options.study_selections, inputs.external_grid,
+        feeders,
+    )
+
+
 # =============================================================================
 # SCRIPT EXECUTION
 # =============================================================================
@@ -197,7 +309,7 @@ if __name__ == '__main__':
     app = pf.GetApplication()
 
     with helper.app_manager(app, gui=True) as app:
-        begin(app)
+        main(app)
 
     end = time.time()
     run_time = round(end - start, 6)
