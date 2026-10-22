@@ -38,6 +38,7 @@ from openpyxl.utils import get_column_letter
 
 from pf_config import pft
 import assets as ast
+import criteria
 from fault_study import fault_impedance
 from relays.reach_factors import device_reach_factors
 from relays.elements import get_prot_elements
@@ -224,7 +225,7 @@ def save_dataframe(
 
     Args:
         app: PowerFactory application instance.
-        region: Network region ('SEQ' or 'Regional Models').
+        region: Network region ('SEQ', 'Northern', 'Southern').
         study_selections: List of selected study types.
         external_grid: Dictionary of grid objects to parameter lists.
         feeders: List of Feeder dataclasses with populated results.
@@ -281,13 +282,9 @@ def save_dataframe(
 
     fault_studies_pd = format_fl_results(region, feeders)
 
-    # Regional fault impedance values
-    if region == 'SEQ':
-        oh_z = '0'
-        ug_z = '0'
-    else:
-        oh_z = '50'
-        ug_z = '10'
+    # Minimum earth fault impedance assumptions, as applied in the study
+    oh_z = str(criteria.earth_fault_resistance(region, 'OH'))
+    ug_z = str(criteria.earth_fault_resistance(region, 'UG'))
 
     variations = app.GetActiveNetworkVariations()
 
@@ -439,8 +436,15 @@ def _write_general_info(
     safe_set_cell(worksheet, 'A18', 'UG Cable Minimum Earth Fault Impedance:')
     safe_set_cell(worksheet, 'B18', f'{ug_z} ohms')
     safe_set_cell(worksheet, 'A20', 'Reach Factor Thresholds:')
-    safe_set_cell(worksheet, 'A21', 'Primary RF >= 2.0 (SEQ) or 1.7 (Regional)')
-    safe_set_cell(worksheet, 'A22', 'Backup RF >= 1.3')
+    safe_set_cell(
+        worksheet,
+        'A21',
+        f'Primary RF >= {criteria.primary_rf_threshold(criteria.SEQ)} (SEQ) '
+        f'or {criteria.primary_rf_threshold(criteria.NORTHERN)} (Regional)'
+    )
+    safe_set_cell(
+        worksheet, 'A22', f'Backup RF >= {criteria.BACKUP_RF_THRESHOLD}'
+    )
     safe_set_cell(
         worksheet,
         'A23',
@@ -637,7 +641,7 @@ def format_detailed_results(region: str, feeder) -> pd.DataFrame:
     and devices appear in ``feeder.devices`` order.
 
     Args:
-        region: Network region string ('SEQ' or 'Regional Models').
+        region: Network region ('SEQ', 'Northern', 'Southern').
         feeder: Feeder dataclass with ``obj`` and ``devices``.
 
     Returns:

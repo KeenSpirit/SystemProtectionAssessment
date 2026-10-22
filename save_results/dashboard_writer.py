@@ -113,7 +113,7 @@ def write_dashboard_facts(
             run; standalone callers can pass a timestamp).
         project_name: Active project name; recorded on every row and
             used (sanitised) in filenames.
-        pipeline_region: 'SEQ' or 'Regional Models'.
+        pipeline_region: 'SEQ', 'Northern' or 'Southern'.
         feeders: Fully populated Feeder dataclasses.
         include_line_rows: Also refresh latest_lines/<project>.csv.
 

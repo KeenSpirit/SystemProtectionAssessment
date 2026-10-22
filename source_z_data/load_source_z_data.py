@@ -3,7 +3,7 @@ Module to build a grid data dictionary.
 
 Reads published source-impedance studies from the ``Source Impedances``
 folder in the repository root and returns a nested dictionary keyed by
-external-grid name, for use by ``start.get_grid_data``.
+external-grid name, for use by ``pipeline.discovery.get_grid_data``.
 
 Two sources are supported, selected by ``region``:
 
@@ -35,8 +35,9 @@ ikss, R/X, Z2/Z1, X0/X1, R0/X0)::
     }
 
 A missing workbook, sheet or key is never fatal: the function logs and
-returns what it could build, leaving ``start.get_grid_data`` to fall
-back to the values already stored on the PowerFactory model.
+returns what it could build, leaving
+``pipeline.discovery.get_grid_data`` to fall back to the values already
+stored on the PowerFactory model.
 """
 
 import logging
@@ -44,6 +45,8 @@ from pathlib import Path
 from typing import Any, Dict, Iterator, List, Optional, Tuple
 
 from openpyxl import load_workbook
+
+import criteria
 
 logger = logging.getLogger(__name__)
 
@@ -120,7 +123,7 @@ def grid_data_import(
     """
     directory = Path(source_dir) if source_dir else _default_source_dir()
 
-    if region == 'SEQ':
+    if criteria.is_seq(region):
         workbook = _resolve_workbook(
             directory, SEQ_WORKBOOK, SEQ_WORKBOOK_GLOB
         )
@@ -176,7 +179,7 @@ def _build_regional(workbook: Path) -> Dict[str, Dict[str, List[Any]]]:
     Grids are keyed by column B. Each contributes three rows: a "Max"
     row, a "Min" contingency row and a "Min_SN" system normal row. Where a
     grid publishes no contingency minimum, 'min' falls back to the
-    first "Min" row of any scenario. 
+    first "Min" row of any scenario.
 
     Args:
         workbook: Path to grid_results_all.xlsx.
@@ -565,10 +568,11 @@ def _check_ikss_units(
     """
     Warn when fault currents look wrong for the ElmXnet ikss unit (kA).
 
-    ``start.get_grid_data`` writes element 1 of each list straight to
-    ``ikss``/``ikssmin``, which PowerFactory holds in kA. Values in the
-    thousands are amps and would overstate the source by 1000x; values
-    at or below zero cannot be applied to an in-service grid.
+    ``pipeline.discovery.get_grid_data`` writes element 1 of each list
+    straight to ``ikss``/``ikssmin``, which PowerFactory holds in kA.
+    Values in the thousands are amps and would overstate the source by
+    1000x; values at or below zero cannot be applied to an in-service
+    grid.
 
     Args:
         workbook: Workbook the data came from.
@@ -585,7 +589,7 @@ def _check_ikss_units(
             non_positive.append(key)
 
     # Neither kind of value may reach ElmXnet: drop the grid so that
-    # start.get_grid_data keeps the model's own values for it.
+    # pipeline.discovery.get_grid_data keeps the model's own values for it.
     for key in set(amps_like) | set(non_positive):
         del grid_data[key]
 
