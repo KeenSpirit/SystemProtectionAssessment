@@ -25,9 +25,10 @@ columns V..Z, exactly as ``build_grid_data.value_row`` reads them.
 Grids with no mapped bus are NOT written to 'Grid Results'. Their rows in
 earlier workbooks were copied from ``pf_external_grids.xlsx``, i.e. from
 the PowerFactory models themselves, in amps. Leaving them out means
-``start.get_grid_data`` keeps each model's own value, which is what those
-rows held anyway, without the 1000x unit error. They are listed in
-'Mapping Notes' so they can be mapped later through --overrides.
+``pipeline.discovery.get_grid_data`` keeps each model's own value, which
+is what those rows held anyway, without the 1000x unit error. They are
+listed in 'Mapping Notes' so they can be mapped later through
+--overrides.
 
 If a mapped bus no longer appears in the new report (renamed or removed),
 the grid is re-matched with ``build_grid_data.match_grid``, using its

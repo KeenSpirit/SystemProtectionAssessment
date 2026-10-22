@@ -16,6 +16,7 @@ from typing import Dict, List, Optional, Tuple, Any
 from pf_config import pft
 from relays import current_conversion, elements, reclose, trip_time
 from assets.enums import ElementType
+from criteria import required_margin
 
 
 FL_STEP_AMPS = 10
@@ -25,38 +26,13 @@ FL_STEP_AMPS = 10
 # saving trip and is not graded against. See delayed_trip_time.
 FAST_TRIP_RATIO = 0.5
 
-# Required coordination margins in seconds. A relay-relay pair needs
-# 300 ms; any pair with a fuse on either side (fuse-fuse, fuse primary
-# with relay backup, relay primary with fuse backup) needs 100 ms.
-# Times compared: relay trip time (no switch operate time) for every
-# relay; fuse total clear time, except a backup fuse behind a relay
-# primary, which uses minimum melt. See required_margin.
-RELAY_RELAY_MARGIN_S = 0.3
-FUSE_PAIR_MARGIN_S = 0.1
+# Required coordination margins (RELAY_RELAY_MARGIN_S, FUSE_PAIR_MARGIN_S)
+# and the pair rule (required_margin) are defined in criteria.py.
 
 
 def is_fuse_device(device) -> bool:
     """True when the Device dataclass wraps a RelFuse."""
     return device.obj.GetClassName() == ElementType.FUSE.value
-
-
-def required_margin(primary_is_fuse: bool, backup_is_fuse: bool) -> float:
-    """
-    Minimum coordination margin for a primary/backup pair.
-
-    Pure function: no PowerFactory access, testable offline.
-
-    Args:
-        primary_is_fuse: True when the primary device is a fuse.
-        backup_is_fuse: True when the backup device is a fuse.
-
-    Returns:
-        RELAY_RELAY_MARGIN_S for two relays, otherwise
-        FUSE_PAIR_MARGIN_S.
-    """
-    if primary_is_fuse or backup_is_fuse:
-        return FUSE_PAIR_MARGIN_S
-    return RELAY_RELAY_MARGIN_S
 
 
 def prot_coordination(app: pft.Application, devices: List):

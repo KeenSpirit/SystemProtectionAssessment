@@ -21,6 +21,7 @@ from typing import Optional, List
 from devices import fuse_mapping as fm
 import pf_protection_helper as helper
 import assets as ast
+import criteria
 import logging
 
 logger = logging.getLogger(__name__)
@@ -182,7 +183,7 @@ def get_fuse_element(
     fuse_object = None
     region = helper.obtain_region(app)
     term = tr_term_dataclass
-    if region == 'SEQ':
+    if criteria.is_seq(region):
         if term.constr == ast.ConstructionType.SWER.value:
             fuse_string = _safe_string(fm.ex_SWER_f_sizes, tfmr.load_kva)
         elif term.constr == ast.ConstructionType.OVERHEAD.value:
@@ -205,7 +206,7 @@ def get_fuse_element(
             else:
                 fuse_string = _safe_string(fm.ex_rmu_oil_fuses, tfmr.load_kva)
             fuse_types = f_types(app, 1)
-    else:    # region == 'Southern' or 'Northern':
+    else:    # Regional: 'Northern' or 'Southern'
         fuse_types = f_types(app, 0)
         term_volts = round(term.l_l_volts, 2)
         if term.constr == ast.ConstructionType.SWER.value:

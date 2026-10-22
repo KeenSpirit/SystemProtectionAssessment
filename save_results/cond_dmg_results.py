@@ -5,16 +5,16 @@ This module formats conductor damage assessment results into a pandas
 DataFrame suitable for Excel export. Pass/fail status is evaluated by
 comparing the accumulated let-through energy (I²t summed across all
 trips in the auto-reclose sequence) against the conductor's thermal
-withstand energy, derived from its 1-second thermal rating.
+withstand energy, derived from its 1-second thermal rating. The
+verdict rule itself lives in criteria.evaluate_damage.
 
 Functions:
     cond_damage_results: Format one feeder's conductor damage rows
 """
 
-from typing import Optional
-
 import pandas as pd
 
+import criteria
 from relays import reclose
 
 
@@ -106,11 +106,11 @@ def cond_damage_results(feeder) -> pd.DataFrame:
                 line.ph_energy for line in device.sect_lines
             ],
             "Allowable energy": [
-                _allowable_energy(line.thermal_rating)
+                criteria.allowable_energy(line.thermal_rating)
                 for line in device.sect_lines
             ],
             "Phase fault conductor damage": [
-                _evaluate_damage(line, fault_type='Phase')
+                criteria.evaluate_damage(line, fault_type='Phase')
                 for line in device.sect_lines
             ],
             "Worst case energy gnd flt lvl": [
@@ -123,7 +123,7 @@ def cond_damage_results(feeder) -> pd.DataFrame:
                 line.pg_energy for line in device.sect_lines
             ],
             "Ground fault conductor damage": [
-                _evaluate_damage(line, fault_type='Ground')
+                criteria.evaluate_damage(line, fault_type='Ground')
                 for line in device.sect_lines
             ],
         })
@@ -134,66 +134,3 @@ def cond_damage_results(feeder) -> pd.DataFrame:
 
     cond_damage_df = pd.concat(line_list, ignore_index=True)
     return cond_damage_df.reindex(columns=COND_DAMAGE_COLUMNS)
-
-
-def _allowable_energy(thermal_rating) -> Optional[float]:
-    """
-    Calculate the conductor thermal withstand energy in A²s.
-
-    The 1-second thermal rating I_thr implies a withstand energy of
-    I_thr² × 1s (from I²t = constant).
-
-    Args:
-        thermal_rating: Conductor 1-second thermal rating in Amperes.
-            May be "NA" for cable systems.
-
-    Returns:
-        Withstand energy in A²s, or None if the rating is missing
-        or non-numeric.
-    """
-    try:
-        return float(thermal_rating) ** 2
-    except (ValueError, TypeError):
-        return None
-
-
-def _evaluate_damage(line, fault_type: str) -> str:
-    """
-    Evaluate conductor damage pass/fail status for a line section.
-
-    Compares the total let-through energy accumulated across ALL trips
-    in the auto-reclose sequence (populated by cond_damage) against the
-    conductor's thermal withstand energy.
-
-    Args:
-        line: Line dataclass with accumulated energy and thermal data.
-        fault_type: 'Phase' or 'Ground' fault evaluation.
-
-    Returns:
-        Assessment result string:
-        - "PASS": Accumulated energy within thermal withstand
-        - "FAIL": Accumulated energy exceeds thermal withstand
-        - "NO DATA": Missing thermal rating or no energy computed
-        - "SWER": Phase fault on SWER line (not applicable)
-    """
-    # Check for SWER line - phase faults not applicable
-    if fault_type == 'Phase':
-        try:
-            line_type = line.obj.typ_id
-            if line_type and 'SWER' in line_type.loc_name:
-                return "SWER"
-        except AttributeError:
-            pass
-
-    if fault_type == 'Phase':
-        energy = line.ph_energy
-    else:
-        energy = line.pg_energy
-
-    allowable = _allowable_energy(line.thermal_rating)
-
-    if allowable is None or not energy:
-        return "NO DATA"
-    if energy > allowable:
-        return "FAIL"
-    return "PASS"

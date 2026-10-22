@@ -37,6 +37,7 @@ import pf_protection_helper as helper
 from fault_study import analysis, study_templates, fault_impedance
 from fault_study import floating_terminals as ft
 import assets as ast
+import criteria
 from importlib import reload
 
 reload(analysis)
@@ -59,7 +60,7 @@ def fault_study(
     Args:
         app: PowerFactory application instance.
         external_grid: Dictionary of external grid objects and parameters.
-        region: Network region ('SEQ', "Northern', 'Southern').
+        region: Network region ('SEQ', 'Northern', 'Southern').
         feeders: List of feeder dataclasses to analyze.
         study_selections: List of selected study types.
 
@@ -94,7 +95,7 @@ def fault_study(
     # invariant: a study that raises must not leave LV out of service
     # in the model.
     lv_terminals = []
-    if region in ["Northern", "Southern"]:
+    if criteria.is_regional(region):
         lv_terminals = [
             t for t in app.GetCalcRelevantObjects("*.ElmTerm")
             if t.GetAttribute("uknom") < 1
@@ -279,12 +280,13 @@ def get_downstream_objects(
 
             if class_name == ast.ElementType.TERM.value and obj.uknom > 1:
                 terminals.append(obj)
-            if class_name == ast.ElementType.LOAD.value and region == 'SEQ':
+            if class_name == ast.ElementType.LOAD.value and criteria.is_seq(region):
                 if obj.bus1 is None:
                     _warn_unconnected(obj, unconnected_warned)
                     continue
                 loads.append(obj)
-            if class_name == ast.ElementType.TFMR.value and region in ['Northern', 'Southern']:
+            if (class_name == ast.ElementType.TFMR.value
+                    and criteria.is_regional(region)):
                 load_type = obj.typ_id
                 if load_type is None:
                     # Untyped transformer: Exclude it from the

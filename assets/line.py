@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from typing import Optional, Dict,Union, TYPE_CHECKING
 
 import assets.utils as utils
+import criteria
 import logging
 
 logger = logging.getLogger(__name__)
@@ -197,9 +198,9 @@ def is_overhead(line: Line) -> bool:
 
 
 DLINE_TO_KM = {
-    'SEQ': 0.001,
-    'Northern': 1.0,
-    'Southern': 1.0,
+    criteria.SEQ: 0.001,
+    criteria.NORTHERN: 1.0,
+    criteria.SOUTHERN: 1.0,
 }
 
 # Regions with no unit convention, warned about once each. Without this
@@ -220,7 +221,7 @@ def _get_length(line: "pft.ElmLne", region: str) -> Optional[float]:
 
     Args:
         line: PowerFactory ElmLne object.
-        region: 'SEQ' or 'Regional Models', from
+        region: 'SEQ', 'Northern' or 'Southern', from
             pf_protection_helper.obtain_region.
 
     Returns:

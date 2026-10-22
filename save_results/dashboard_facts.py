@@ -90,11 +90,11 @@ line's any-damage status is its ground status.
 
 Thresholds
 ----------
-Primary reach: 2.0 (SEQ) / 1.7 (Regional Models). Backup: 1.3.
-System normal backup: 1.5.
+Primary reach: 2.0 (SEQ) / 1.7 (Northern, Southern). Backup: 1.3.
+System normal backup: 1.5. All defined in criteria.py.
 
 Coordination margin: depends on the primary/backup pair - 0.3 s
-relay-relay, 0.1 s with a fuse on either side (prot_coord.
+relay-relay, 0.1 s with a fuse on either side (criteria.
 required_margin). Not applied here; margins are emitted raw alongside
 the required margin of the pair that set each one (ph_coord_required_s,
 pg_coord_required_s), and the dashboard compares the two. The required
@@ -122,8 +122,8 @@ ASSUMPTIONS.md entries this module introduces:
 import logging
 from typing import Dict, List, Optional, Tuple
 
+import criteria
 from assets.line import is_overhead
-from save_results.cond_dmg_results import _evaluate_damage
 
 logger = logging.getLogger(__name__)
 
@@ -131,13 +131,9 @@ logger = logging.getLogger(__name__)
 # Thresholds
 # ---------------------------------------------------------------------
 
-PRIMARY_RF_THRESHOLD = {
-    'SEQ': 2.0,
-    'Northern': 1.7,
-    'Southern': 1.7,
-}
-BACKUP_RF_THRESHOLD = 1.3
-SN_BACKUP_RF_THRESHOLD = 1.5
+# Reach thresholds come from criteria; only the legacy coordination
+# column constant below is local to the dashboard.
+
 # Legacy blanket coordination threshold. Kept so the column stays in
 # place for positional folder combines and historic rows remain
 # interpretable; current rows carry per-pair required margins.
@@ -349,12 +345,12 @@ def _damage_status(line, fault_type: str) -> str:
         COVERED (pass), EXCEPTION (fail), NOT_APPLICABLE (phase fault
         on SWER) or UNASSESSABLE.
     """
-    verdict = _evaluate_damage(line, fault_type=fault_type)
-    if verdict == 'FAIL':
+    verdict = criteria.evaluate_damage(line, fault_type=fault_type)
+    if verdict == criteria.FAIL:
         return EXCEPTION
-    if verdict == 'PASS':
+    if verdict == criteria.PASS:
         return COVERED
-    if verdict == 'SWER':
+    if verdict == criteria.SWER:
         return NOT_APPLICABLE
     return UNASSESSABLE
 
@@ -521,7 +517,7 @@ def build_dashboard_facts(
     Assemble dashboard fact rows for one project's feeders.
 
     Args:
-        pipeline_region: 'SEQ' or 'Regional Models' - selects the
+        pipeline_region: 'SEQ', 'Northern' or 'Southern' - selects the
             primary reach threshold and is recorded on every row.
         feeders: Fully populated Feeder dataclasses (all pipeline
             stages complete, including populate_line_reach_factors
@@ -535,11 +531,11 @@ def build_dashboard_facts(
         Run identity (run id, project, timestamps) is deliberately
         absent - the batch writer owns it.
     """
-    pri_threshold = PRIMARY_RF_THRESHOLD.get(pipeline_region, 2.0)
+    pri_threshold = criteria.primary_rf_threshold(pipeline_region)
     tier_thresholds = {
         'pri': pri_threshold,
-        'bu': BACKUP_RF_THRESHOLD,
-        'sn_bu': SN_BACKUP_RF_THRESHOLD,
+        'bu': criteria.BACKUP_RF_THRESHOLD,
+        'sn_bu': criteria.SN_BACKUP_RF_THRESHOLD,
     }
 
     device_rows: List[Dict] = []
@@ -670,8 +666,8 @@ def build_dashboard_facts(
                 'pg_coord_required_s': getattr(
                     device, 'pg_coord_required', None),
                 'pri_rf_threshold': pri_threshold,
-                'bu_rf_threshold': BACKUP_RF_THRESHOLD,
-                'sn_bu_rf_threshold': SN_BACKUP_RF_THRESHOLD,
+                'bu_rf_threshold': criteria.BACKUP_RF_THRESHOLD,
+                'sn_bu_rf_threshold': criteria.SN_BACKUP_RF_THRESHOLD,
                 'oh_km': round(oh_km, 4),
                 'oh_lines_no_length': no_length,
                 'ph_dmg_km': round(dmg_km['ph'], 4),

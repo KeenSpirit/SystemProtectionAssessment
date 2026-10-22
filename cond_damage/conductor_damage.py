@@ -28,6 +28,7 @@ from typing import Dict, List, Optional, Tuple, Any
 from pf_config import pft
 from relays import current_conversion, elements, reclose, trip_time
 from assets.enums import ElementType
+import criteria
 
 logger = logging.getLogger(__name__)
 
@@ -180,7 +181,7 @@ def cond_damage(app: pft.Application, devices: List) -> None:
         # A single-wire SWER line cannot carry a phase-to-phase fault, so
         # it is left out of the phase pass. Its phase verdict is reported
         # as "SWER" by cond_dmg_results, not as a failed calculation.
-        swer_lines = [_is_swer_line(line) for line in lines]
+        swer_lines = [criteria.is_swer_line(line) for line in lines]
 
         while trip_count <= total_trips:
             block_service_status = reclose.set_enabled_elements(dev_obj)
@@ -332,15 +333,6 @@ def cond_damage(app: pft.Application, devices: List) -> None:
                 f"partial total. Device has {total_trips} trip(s). Check "
                 f"whether any earth element is enabled on those trips."
             )
-
-
-def _is_swer_line(line: Any) -> bool:
-    """True for a SWER line (line type name contains 'SWER')."""
-    try:
-        line_type = line.obj.typ_id
-        return bool(line_type) and 'SWER' in line_type.loc_name
-    except AttributeError:
-        return False
 
 
 # =============================================================================

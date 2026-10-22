@@ -7,14 +7,15 @@ This module determines appropriate fault current values based on:
 - Study type (minimum vs system normal minimum)
 
 The key insight is that different regions use different fault impedance
-assumptions for earth faults:
-- SEQ: Uses a single fault impedance value (0 ohms)
-- Regional: Uses construction-dependent values (50Ω for OH, 10Ω for UG)
+assumptions for earth faults (SEQ: 0 ohms; Regional: 50 ohms overhead,
+10 ohms otherwise). The assumptions themselves are defined in
+criteria.earth_fault_resistance; this module applies them.
 """
 
 from typing import List
 from pf_config import pft
 import assets as ast
+import criteria
 
 
 def update_node_construction(devices: List[ast.Device]) -> None:
@@ -105,6 +106,16 @@ def _update_construction(all_nodes: List[ast.Termination]) -> None:
             node.constr = "OH"
 
 
+# Termination fields holding the minimum earth fault level for each
+# fault resistance criteria.earth_fault_resistance can return:
+# (minimum field, system normal minimum field).
+_PG_FAULT_ATTR = {
+    0: ('min_fl_pg', 'min_sn_fl_pg'),
+    10: ('min_fl_pg10', 'min_sn_fl_pg10'),
+    50: ('min_fl_pg50', 'min_sn_fl_pg50'),
+}
+
+
 def get_terminal_pg_fault(region: str,
                           term: ast.Termination,
                           system_normal: bool = False
@@ -112,10 +123,9 @@ def get_terminal_pg_fault(region: str,
     """
     Get the appropriate minimum phase-ground fault current for a terminal.
 
-    Selects the correct fault current value based on:
-    - Region: SEQ uses single impedance; Regional uses construction-dependent
-    - Construction: Overhead (50Ω) vs Underground (10Ω) for Regional
-    - Study type: Normal minimum vs System Normal minimum
+    The fault resistance assumed at the terminal comes from
+    criteria.earth_fault_resistance (region and construction); this
+    function selects the Termination field calculated for it.
 
     Args:
         region: Network region identifier ('SEQ', 'Northern', 'Southern')
@@ -127,43 +137,25 @@ def get_terminal_pg_fault(region: str,
         Minimum phase-ground fault current in Amperes.
         Returns 0 if the required attribute is None.
 
-    Fault Impedance by Region:
-        SEQ:
-            - All constructions: 0Ω fault impedance
-            - Uses: min_fl_pg or min_sn_fl_pg
-
-        Regional Models:
-            - Overhead (OH): 50Ω fault impedance
-            - Underground (UG): 10Ω fault impedance
-            - Uses: min_fl_pg50/min_sn_fl_pg50 for OH
-                    min_fl_pg10/min_sn_fl_pg10 for UG
+    Raises:
+        ValueError: If the region is unknown, or criteria assumes a
+            fault resistance with no matching Termination field.
 
     Example:
         >>> # Get minimum fault current for reach factor calculation
         >>> min_fl = get_terminal_pg_fault('SEQ', terminal)
         >>>
         >>> # Get system normal minimum for reporting
-        >>> sn_min_fl = get_terminal_pg_fault('SEQ', terminal, system_normal=True)
+        >>> sn_min_fl = get_terminal_pg_fault('SEQ', terminal, True)
     """
-    if region == 'SEQ':
-        # SEQ: Single fault impedance value (0 ohms)
-        if system_normal:
-            fault_level = term.min_sn_fl_pg
-        else:
-            fault_level = term.min_fl_pg
-    else:
-        # Regional: Construction-dependent fault impedance
-        if term.constr == 'OH':
-            # Overhead: 50 ohm fault impedance
-            if system_normal:
-                fault_level = term.min_sn_fl_pg50
-            else:
-                fault_level = term.min_fl_pg50
-        else:
-            # Underground/Cable: 10 ohm fault impedance
-            if system_normal:
-                fault_level = term.min_sn_fl_pg10
-            else:
-                fault_level = term.min_fl_pg10
+    resistance = criteria.earth_fault_resistance(region, term.constr)
+    try:
+        min_attr, sn_min_attr = _PG_FAULT_ATTR[resistance]
+    except KeyError:
+        raise ValueError(
+            f"No Termination fault level field for a {resistance} ohm "
+            f"earth fault; add one alongside min_fl_pg10/min_fl_pg50."
+        ) from None
 
+    fault_level = getattr(term, sn_min_attr if system_normal else min_attr)
     return fault_level if fault_level is not None else 0
