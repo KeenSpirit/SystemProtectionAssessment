@@ -17,4 +17,5 @@ Modules:
 Subpackages:
     tools: Self-contained utilities (project finder, open point
         viewer, relay model checks, TOC curve label update).
+    oc_plots: Time-overcurrent coordination plots.
 """

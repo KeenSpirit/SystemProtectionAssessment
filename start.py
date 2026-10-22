@@ -223,6 +223,7 @@ def _run_selection(app: pft.Application) -> None:
         AssessmentError: If the project cannot be assessed.
     """
     from interactive import colour_maps, study_inputs
+    from interactive.dialogs import UserCancelled
     from interactive.study_selection import Study, get_study_selection
     from interactive.tools import (
         curve_labels, find_substation, model_checks, open_points
@@ -275,11 +276,6 @@ def _run_selection(app: pft.Application) -> None:
         app, region, feeders, inputs.external_grid, options
     )
 
-    if selection.coordination_plot:
-        app.PrintWarn(
-            "Protection relay coordination plots have not been merged into "
-            "this script yet; none were drawn."
-        )
     if selection.study is Study.ALL_RELAYS:
         colour_maps.colour_map(
             app, region, feeders, selection.conductor_damage
@@ -289,6 +285,31 @@ def _run_selection(app: pft.Application) -> None:
         app, region, options.study_selections, inputs.external_grid,
         feeders,
     )
+
+    # Plots come last: the results are already saved, so a failed plot
+    # or a cancelled RMU fuse dialog cannot cost the workbook.
+    if selection.coordination_plot:
+        from interactive.oc_plots import plot_relay
+        try:
+            for feeder in feeders:
+                selected_devices = options.devices_for(feeder)
+                if not selected_devices:
+                    continue
+                try:
+                    plot_relay.plot_all_relays(
+                        app, region, feeder, selected_devices
+                    )
+                except (UserCancelled, pf.ExitError):
+                    raise
+                except Exception:
+                    logger.exception(
+                        f"{feeder.obj.loc_name}: coordination plots failed"
+                    )
+        except UserCancelled:
+            app.PrintPlain(
+                "Coordination plots cancelled by user; study results were "
+                "saved."
+            )
 
 
 # =============================================================================
