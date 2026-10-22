@@ -248,14 +248,8 @@ def _run_selection(app: pft.Application) -> None:
         curve_labels.update_curve_labels(app, project)
         return
 
-    if selection.study is Study.LEGACY:
-        app.PrintWarn(
-            "The legacy fault level study has not been merged into this "
-            "script yet. Please run it from protection_assessment."
-        )
-        return
-
-    # Fault level study, with or without relays modelled
+    # Fault level study: all relays, no relays, or the legacy SEQ study
+    # (which selects devices like the no-relay study)
     study_case = activate_study_case(app, keep_active=True)
     model_checks.run(app)
 
@@ -275,6 +269,11 @@ def _run_selection(app: pft.Application) -> None:
     feeders = run_assessment(
         app, region, feeders, inputs.external_grid, options
     )
+
+    if selection.study is Study.LEGACY:
+        from interactive.legacy_script import script_bridge
+        script_bridge.bridge_results(app, inputs.external_grid, feeders)
+        return
 
     if selection.study is Study.ALL_RELAYS:
         colour_maps.colour_map(

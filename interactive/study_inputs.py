@@ -89,7 +89,8 @@ class FaultLevelStudy:
 
         Args:
             region: Network region ('SEQ', 'Northern', 'Southern').
-            study: Study.ALL_RELAYS or Study.NO_RELAYS.
+            study: Study.ALL_RELAYS, or Study.NO_RELAYS / Study.LEGACY
+                (both select switches as stand-in devices).
 
         Returns:
             The collected inputs.
@@ -1107,7 +1108,8 @@ def get_input(
     Args:
         app: PowerFactory application instance.
         region: Network region ('SEQ', 'Northern', 'Southern').
-        study: Study.ALL_RELAYS or Study.NO_RELAYS.
+        study: Study.ALL_RELAYS, or Study.NO_RELAYS / Study.LEGACY
+            (both select switches as stand-in devices).
 
     Returns:
         The collected inputs.
