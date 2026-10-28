@@ -30,6 +30,12 @@ from pf_config import pft
 
 logger = logging.getLogger(__name__)
 
+try:
+    import powerfactory as _pf
+    _SESSION_LOST = (_pf.ExitError,)
+except ImportError:  # pragma: no cover - offline only
+    _SESSION_LOST = ()
+
 
 __all__ = [
     'app_manager',
@@ -49,46 +55,54 @@ def app_manager(
     clear: bool = True,
     gui: bool = False,
     echo_on: bool = False,
-    cache: bool = False
+    cache: bool = False,
+    clear_recycle_bin: bool = True,
 ) -> Generator[pft.Application, None, None]:
     """
     Context manager for PowerFactory application lifecycle.
 
-    Manages application state during script execution, handling output
-    settings, GUI updates, caching, and cleanup on exit.
+Manages application state during script execution, handling output
+settings, GUI updates, caching, and cleanup on exit.
 
-    Args:
-        app: PowerFactory application instance.
-        clear: If True, clear output window on entry. Default True.
-        gui: If True, enable GUI updates during execution. Default False.
-        echo_on: If True, enable full echo output. Default False.
-        cache: If True, enable write cache. Default False.
-            WARNING: Only use cache=True if you understand the impacts.
+Args:
+    app: PowerFactory application instance.
+    clear: If True, clear output window on entry. Default True.
+    gui: If True, enable GUI updates during execution. Default False.
+    echo_on: If True, enable full echo output. Default False.
+    cache: If True, enable write cache. Default False.
+        WARNING: Only use cache=True if you understand the impacts.
+    clear_recycle_bin: If True, empty the PowerFactory recycle bin on
+        exit. Default True (interactive use). The batch passes False
+        and empties the bin once at the end of the run instead.
+
+    Raises:
+        powerfactory.ExitError: If the PowerFactory session dies during
+            teardown. The remaining teardown steps are skipped.
 
     Yields:
         The configured PowerFactory application instance.
 
-    Side Effects:
-        On entry:
-            - Resets calculation state
-            - Clears output window (if clear=True)
-            - Configures echo settings
-            - Sets GUI update and cache modes
-            - Enables user break
+Side Effects:
+    On entry:
+        - Resets calculation state
+        - Clears output window (if clear=True)
+        - Configures echo settings
+        - Sets GUI update and cache modes
+        - Enables user break
 
-        On exit:
-            - Restores echo to full output
-            - Re-enables GUI updates
-            - Disables user break
-            - Writes cached changes to database (if cache was enabled)
-            - Clears recycle bin
-            - Releases application reference
+    On exit:
+        - Restores echo to full output
+        - Re-enables GUI updates
+        - Disables user break
+        - Writes cached changes to database (if cache was enabled)
+        - Clears recycle bin (if clear_recycle_bin=True)
+        - Releases application reference
 
     Example:
-        >>> with app_manager(app, gui=True) as app:
-        ...     # GUI updates visible during this block
-        ...     run_fault_study(app)
-    """
+    >>> with app_manager(app, gui=True) as app:
+    ...     # GUI updates visible during this block
+    ...     run_fault_study(app)
+"""
     try:
         app.ResetCalculation()
 
@@ -111,8 +125,6 @@ def app_manager(
 
         yield app
 
-
-
     finally:
         # Teardown steps are independently guarded. Previously any one
         # failure aborted the rest and propagated out of __exit__,
@@ -122,13 +134,22 @@ def app_manager(
         # that followed. Each step now runs regardless of what the
         # previous one did.
         #
+        # The exception is a dead session (powerfactory.ExitError). Then
+        # every later step would raise again, and the batch must stop
+        # using `app`, so the remaining steps are skipped and the error
+        # is re-raised once teardown is done
+        #
         # Ordering is deliberate: the write cache is flushed before the
         # cosmetic restores, because pending model changes are the only
         # thing here that cannot be recovered by a later run.
+        session_lost = None
+
         try:
             if app.IsWriteCacheEnabled():
                 app.WriteChangesToDb()
                 app.SetWriteCacheEnabled(0)
+        except _SESSION_LOST as err:
+            session_lost = err
         except Exception:
             # Pending changes may not have persisted. This is the one
             # teardown failure with data consequences, so it is an
@@ -138,44 +159,64 @@ def app_manager(
                 "model changes may not have been written to the database"
             )
 
-        try:
-            echo = app.GetFromStudyCase('ComEcho')
-            echo.iopt_err = True
-            echo.iopt_wrng = True
-            echo.iopt_info = True
-            echo.iopt_oth = True
-            app.EchoOn()
-        except Exception:
-            logger.warning(
-                "app_manager: restoring the echo failed", exc_info=True
-            )
+        if session_lost is None:
+            try:
+                echo = app.GetFromStudyCase('ComEcho')
+                echo.iopt_err = True
+                echo.iopt_wrng = True
+                echo.iopt_info = True
+                echo.iopt_oth = True
+                app.EchoOn()
+            except _SESSION_LOST as err:
+                session_lost = err
+            except Exception:
+                logger.warning(
+                    "app_manager: restoring the echo failed", exc_info=True
+                )
 
-        try:
-            app.SetGuiUpdateEnabled(1)
-        except Exception:
-            logger.warning(
-                "app_manager: re-enabling GUI updates failed", exc_info=True
-            )
+        if session_lost is None:
+            try:
+                app.SetGuiUpdateEnabled(1)
+            except _SESSION_LOST as err:
+                session_lost = err
+            except Exception:
+                logger.warning(
+                    "app_manager: re-enabling GUI updates failed",
+                    exc_info=True,
+                )
 
-        try:
-            app.SetUserBreakEnabled(0)
-        except Exception:
-            logger.warning(
-                "app_manager: disabling user break failed", exc_info=True
-            )
+        if session_lost is None:
+            try:
+                app.SetUserBreakEnabled(0)
+            except _SESSION_LOST as err:
+                session_lost = err
+            except Exception:
+                logger.warning(
+                    "app_manager: disabling user break failed", exc_info=True
+                )
 
-        try:
-            # Housekeeping only. Nothing downstream depends on the
-            # recycle bin being empty, so a failure here must never
-            # end a run
-            app.ClearRecycleBin()
-        except Exception:
-            logger.warning(
-                "app_manager: ClearRecycleBin failed; the recycle bin "
-                "was left as-is", exc_info=True
-            )
+        if session_lost is None and clear_recycle_bin:
+            try:
+                # Housekeeping only. Nothing downstream depends on the
+                # recycle bin being empty, so an ordinary failure here
+                # must never end a run.
+                app.ClearRecycleBin()
+            except _SESSION_LOST as err:
+                session_lost = err
+            except Exception:
+                logger.warning(
+                    "app_manager: ClearRecycleBin failed; the recycle bin "
+                    "was left as-is", exc_info=True
+                )
 
         del app
+
+        if session_lost is not None:
+            logger.error(
+                "app_manager: the PowerFactory session died during "
+                "teardown; remaining teardown steps skipped"
+            )
+            raise session_lost
 
 
 @contextmanager
