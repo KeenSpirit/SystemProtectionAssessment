@@ -288,11 +288,13 @@ def _run_selection(app: pft.Application) -> None:
         curve_labels.update_curve_labels(app, project)
         return
 
-    from interactive import colour_maps, study_inputs
+    # Fault study imports are staged so each dialog appears as early as
+    # possible: input dialogs need only discovery (and openpyxl); the
+    # assessment modules load after the dialogs, and pandas/numpy load
+    # only when the results are saved.
+    from interactive import study_inputs
     from interactive.tools import model_checks
     from pipeline import discovery
-    from pipeline.run import AssessmentOptions, run_assessment
-    from save_results import save_result as sr
 
     # Fault level study: all relays, no relays, or the legacy SEQ study
     # (which selects devices like the no-relay study)
@@ -307,6 +309,7 @@ def _run_selection(app: pft.Application) -> None:
     )
     cycle_all_grids(app, study_case)
 
+    from pipeline.run import AssessmentOptions, run_assessment
     options = AssessmentOptions(
         conductor_damage=selection.conductor_damage,
         coordination=selection.coordination,
@@ -322,10 +325,13 @@ def _run_selection(app: pft.Application) -> None:
         return
 
     if selection.study is Study.ALL_RELAYS:
+        from interactive import colour_maps
         colour_maps.colour_map(
             app, region, feeders, selection.conductor_damage
         )
 
+    # pandas and numpy are first needed here.
+    from save_results import save_result as sr
     sr.save_dataframe(
         app, region, options.study_selections, inputs.external_grid,
         feeders,
