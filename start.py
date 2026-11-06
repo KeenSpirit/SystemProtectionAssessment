@@ -17,7 +17,13 @@ Functions:
     main: Interactive study selection and assessment.
 """
 
+# ruff: noqa: E402 - _SCRIPT_T0 must be taken before the other imports
 import time
+
+# Taken before any other import so the startup log line in
+# _run_selection covers this module's own imports too.
+_SCRIPT_T0 = time.perf_counter()
+
 import sys
 import logging
 import logging.config
@@ -37,7 +43,7 @@ from pipeline.study_case import activate_study_case, cycle_all_grids
 # them (find project, open points, curve labels) never load them at
 # all. The batch calls preload_analysis_modules() straight after
 # `import start`, so for the batch everything is still imported once,
-# up front.
+# up front, exactly as before.
 
 logger = logging.getLogger(__name__)
 
@@ -256,6 +262,10 @@ def _run_selection(app: pft.Application) -> None:
     from interactive.dialogs import UserCancelled
     from interactive.study_selection import Study, get_study_selection
 
+    logger.info(
+        f"Startup: {time.perf_counter() - _SCRIPT_T0:.1f} s to the study "
+        f"selection dialog"
+    )
     selection = get_study_selection(app)
 
     if selection.study is Study.FIND_PROJECT:
