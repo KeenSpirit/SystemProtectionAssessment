@@ -27,18 +27,42 @@ from config_logging import configure_logging as cl
 from pf_config import pft
 import pf_protection_helper as helper
 from typing import Any, Dict, Optional
-from save_results import save_result as sr
-from save_results import dashboard_writer
-from pipeline import discovery
 from pipeline.errors import AssessmentError
-from pipeline.run import AssessmentOptions, run_assessment
 from pipeline.study_case import activate_study_case, cycle_all_grids
+
+# The analysis stack (pipeline.discovery, pipeline.run, save_results)
+# and its pandas/numpy/openpyxl dependencies are imported inside begin()
+# and _run_selection(), not here. An interactive run then shows its
+# first dialog without loading them, and the tools that never need
+# them (find project, open points, curve labels) never load them at
+# all. The batch calls preload_analysis_modules() straight after
+# `import start`, so for the batch everything is still imported once,
+# up front.
 
 logger = logging.getLogger(__name__)
 
 # Re-exported so the batch layer's `except start.AssessmentError`
 # handling is unaffected by the move to pipeline.errors.
-__all__ = ["AssessmentError", "begin", "main", "setup_stdout_logging"]
+__all__ = [
+    "AssessmentError", "begin", "main", "preload_analysis_modules",
+    "setup_stdout_logging",
+]
+
+
+def preload_analysis_modules() -> None:
+    """Import the full analysis stack now rather than on first use.
+
+    For the batch: call straight after `import start`. That keeps the
+    batch importing every SPA module up front, as it did when these
+    were module-level imports here, so the input snapshot that
+    batch_relay_update takes after importing start still covers the
+    code the run actually executes. Idempotent; after the first call
+    each import is a sys.modules lookup.
+    """
+    import pipeline.discovery  # noqa: F401
+    import pipeline.run  # noqa: F401
+    import save_results.dashboard_writer  # noqa: F401
+    import save_results.save_result  # noqa: F401
 
 
 def setup_stdout_logging(level: int = logging.INFO) -> None:
@@ -108,6 +132,11 @@ def begin(
         AssessmentError: If the project cannot be assessed (missing
             study case, no radial feeders, no protection devices).
     """
+
+    from pipeline import discovery
+    from pipeline.run import AssessmentOptions, run_assessment
+    from save_results import dashboard_writer
+    from save_results import save_result as sr
 
     setup_stdout_logging()
     logger.info("System Protection Assessment started")
@@ -222,16 +251,15 @@ def _run_selection(app: pft.Application) -> None:
         UserCancelled: If the user presses Exit in any dialog.
         AssessmentError: If the project cannot be assessed.
     """
-    from interactive import colour_maps, study_inputs
+    # Only what the first dialog needs is imported before it is shown;
+    # each branch below imports its own modules once the user has chosen.
     from interactive.dialogs import UserCancelled
     from interactive.study_selection import Study, get_study_selection
-    from interactive.tools import (
-        curve_labels, find_substation, model_checks, open_points
-    )
 
     selection = get_study_selection(app)
 
     if selection.study is Study.FIND_PROJECT:
+        from interactive.tools import find_substation
         find_substation.run(app)
         return
 
@@ -241,12 +269,20 @@ def _run_selection(app: pft.Application) -> None:
         return
 
     if selection.study is Study.OPEN_POINTS:
+        from interactive.tools import open_points
         open_points.run(app)
         return
 
     if selection.study is Study.CURVE_LABELS:
+        from interactive.tools import curve_labels
         curve_labels.update_curve_labels(app, project)
         return
+
+    from interactive import colour_maps, study_inputs
+    from interactive.tools import model_checks
+    from pipeline import discovery
+    from pipeline.run import AssessmentOptions, run_assessment
+    from save_results import save_result as sr
 
     # Fault level study: all relays, no relays, or the legacy SEQ study
     # (which selects devices like the no-relay study)
