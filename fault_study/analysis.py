@@ -13,8 +13,6 @@ Functions:
 from typing import Optional
 from pf_config import pft
 from fault_study import study_templates
-from importlib import reload
-reload(study_templates)
 
 
 def short_circuit(

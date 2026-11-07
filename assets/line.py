@@ -17,8 +17,6 @@ logger = logging.getLogger(__name__)
 if TYPE_CHECKING:
     from pf_config import pft
 
-from importlib import reload
-reload(utils)
 
 @dataclass
 class Line:

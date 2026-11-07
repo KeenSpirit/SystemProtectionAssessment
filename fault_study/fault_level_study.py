@@ -34,16 +34,11 @@ logger = logging.getLogger(__name__)
 
 from pf_config import pft
 import pf_protection_helper as helper
-from fault_study import analysis, study_templates, fault_impedance
+from fault_study import analysis, fault_impedance
 from fault_study import floating_terminals as ft
 import assets as ast
 import criteria
-from importlib import reload
 
-reload(analysis)
-reload(ft)
-reload(ast)
-reload(fault_impedance)
 
 def fault_study(
     app: pft.Application,

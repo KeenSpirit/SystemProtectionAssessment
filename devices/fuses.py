@@ -14,7 +14,6 @@ Functions:
 """
 
 
-from importlib import reload
 from pf_config import pft
 from typing import Optional, List
 
@@ -25,8 +24,6 @@ import criteria
 import logging
 
 logger = logging.getLogger(__name__)
-reload(fm)
-reload(ast)
 
 
 def get_all_fuses(app: pft.Application) -> List[pft.RelFuse]:

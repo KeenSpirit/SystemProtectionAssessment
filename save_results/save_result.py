@@ -39,14 +39,9 @@ from openpyxl.utils import get_column_letter
 from pf_config import pft
 import assets as ast
 import criteria
-from fault_study import fault_impedance
 from relays.reach_factors import device_reach_factors
 from relays.elements import get_prot_elements
 from save_results import cond_dmg_results as cd
-from importlib import reload
-
-reload(fault_impedance)
-reload(cd)
 
 # =============================================================================
 # SHEET LAYOUTS
