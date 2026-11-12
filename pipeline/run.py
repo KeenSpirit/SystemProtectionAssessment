@@ -118,11 +118,14 @@ def run_assessment(
     Raises:
         pf.ExitError: If the user breaks the run in PowerFactory.
     """
+    # The project's open switches are the same for every feeder: list
+    # them once, then test each feeder against that list.
+    open_switches = gop.find_open_switches(app)
     for i, feeder in enumerate(feeders, start=1):
         name = getattr(feeder.obj, "loc_name", str(feeder.obj))
 
         logger.info(f"[{i}/{len(feeders)}] {name}: open points")
-        gop.get_open_points(app, feeder)
+        gop.get_open_points(app, feeder, open_switches)
 
     logger.info("All feeders fault study")
     fs.fault_study(

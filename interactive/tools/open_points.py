@@ -20,7 +20,10 @@ from typing import List, Tuple
 from pf_config import pft
 from assets.enums import ElementType
 from assets import feeder as fdr
-from fdr_open_points.get_open_points import get_open_points
+from fdr_open_points.get_open_points import (
+    find_open_switches,
+    get_open_points,
+)
 from pipeline.discovery import mesh_feeder_check
 from interactive.dialogs import CancelFlag, UserCancelled
 
@@ -53,13 +56,16 @@ def run(app: pft.Application) -> None:
         app.PrintPlain("User terminated script.")
         return
 
+    # Listed once for all the selected feeders.
+    open_switches = find_open_switches(app)
+
     for feeder_name in feeder_list:
         feeder_obj = app.GetCalcRelevantObjects(
             feeder_name + ".ElmFeeder"
         )[0]
         feeder = fdr.initialise_fdr_dataclass(feeder_obj)
 
-        get_open_points(app, feeder)
+        get_open_points(app, feeder, open_switches)
 
         app.PrintPlain(f"Feeder {feeder.obj} open points:")
 
