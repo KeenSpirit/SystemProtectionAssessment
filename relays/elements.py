@@ -11,7 +11,7 @@ Functions:
 """
 
 from typing import Dict, List, Union, TYPE_CHECKING
-import logging
+import logginga
 
 if TYPE_CHECKING:
     from pf_config import pft
@@ -60,6 +60,28 @@ def _is_definite_time(element) -> bool:
     if charac is None:
         return False
     return "definite" in charac.loc_name.lower()
+
+
+# Elements that shape the reclose sequence but do not clear the fault any
+# faster. High Current Lockout sends the recloser to lockout when the fault
+# current exceeds its setting; the trip itself still comes from the trip's
+# own curves. PowerFactory models it as a RelIoc with a reclose target, so
+# without this it is read as a 0.02 s phase instantaneous trip. Compared
+# against the element's loc_name, lower case with single spaces.
+SEQUENCE_CONTROL_ELEMENT_NAMES = frozenset({
+    "high current lockout",
+})
+
+
+def _is_sequence_control(element) -> bool:
+    """
+    True when the element is a reclose sequence control, not a trip.
+
+    Such elements are never timed, graded against or used as a pickup,
+    whatever their out-of-service flag or setting.
+    """
+    name = " ".join(str(element.loc_name).lower().split())
+    return name in SEQUENCE_CONTROL_ELEMENT_NAMES
 
 
 def get_all_relays(app: "pft.Application") -> List["pft.ElmRelay"]:
@@ -111,6 +133,9 @@ def get_prot_elements(
     Args:
         device_pf: PowerFactory ElmRelay object
 
+    Reclose sequence controls (SEQUENCE_CONTROL_ELEMENT_NAMES, e.g. High
+    Current Lockout) are left out of the instantaneous lists.
+
     Returns:
         Dictionary with keys:
         - 'oc_idmt_elements': Phase overcurrent IDMT elements
@@ -125,11 +150,17 @@ def get_prot_elements(
         >>> print(f"Found {len(elements['ef_idmt_elements'])} EF IDMT elements")
     """
 
-    # Get all IDMT elements that are in service
+    # Get all IDMT elements that are in service. IsOutOfService() also
+    # reports an element whose enclosing sub-relay is out of service;
+    # e:outserv is the element's own flag only. Reclosers that hold each
+    # trip's curves in a sub-relay ('Trip 1'..'Trip 4') are blocked per
+    # trip on the sub-relay, so the own flag kept every trip's curves
+    # active on every trip. The instantaneous lists below already use
+    # IsOutOfService().
     idmt_elements = [
         idmt_element
         for idmt_element in device_pf.GetContents("*.RelToc", True)
-        if not idmt_element.GetAttribute("e:outserv")
+        if not idmt_element.IsOutOfService()
     ]
 
     # Phase overcurrent IDMT elements (I>t characteristic, not definite time)
@@ -147,6 +178,7 @@ def get_prot_elements(
         if _safe_attr(element, "r:typ_id:e:sfiec") == "I>>"
         if not element.IsOutOfService()
         if _safe_attr(element, "r:typ_id:e:irecltarget")
+        if not _is_sequence_control(element)
     ]
 
     # Earth fault IDMT elements
@@ -164,6 +196,7 @@ def get_prot_elements(
         if _safe_attr(element, "r:typ_id:e:sfiec") == "IE>>"
         if not element.IsOutOfService()
         if _safe_attr(element, "r:typ_id:e:irecltarget")
+        if not _is_sequence_control(element)
     ]
 
     # Negative phase sequence IDMT elements
@@ -180,6 +213,7 @@ def get_prot_elements(
         if _safe_attr(element, "r:typ_id:e:sfiec") == "I2>>"
         if _safe_attr(element, "r:typ_id:e:irecltarget")
         if not element.IsOutOfService()
+        if not _is_sequence_control(element)
     ]
 
     return {
