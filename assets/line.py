@@ -28,10 +28,13 @@ class Line:
 
     Core Attributes (set at initialization):
         obj: The PowerFactory ElmLne object
-        phases: Number of phases (1, 2, or 3)
+        phases: Number of phases (1, 2, or 3), or None when the line has
+            no type or a type the phase count cannot be read from
         l_l_volts: Line-to-line voltage in kV
-        line_type: Conductor type description (e.g., "AAC/S 7/4.50")
-        thermal_rating: Thermal current rating in Amps, or "NA" for cables
+        line_type: Conductor type description (e.g., "AAC/S 7/4.50"), or
+            "NA" for cable systems and for lines with no type
+        thermal_rating: Thermal current rating in Amps, or "NA" for
+            cables and for lines with no type or no conductor type
         length: Circuit length in km (PF 'dline'), or None if unreadable
         constr: Construction class - "OH", "UG" or "SWER"
 
@@ -68,7 +71,7 @@ class Line:
     """
     # Core identification - always required
     obj: "pft.ElmLne"
-    phases: int
+    phases: Optional[int]
     l_l_volts: float
     line_type: str
     thermal_rating: Union[float, str]  # Can be "NA" for cables
@@ -125,6 +128,13 @@ def initialise_line_dataclass(
         For cable systems (TypCabsys), thermal_rating returns "NA" as
         cable thermal limits are handled differently.
 
+        A line with no type (typ_id None) is kept, with line_type and
+        thermal_rating "NA" and phases None, and a warning naming it.
+        It used to raise AttributeError here, which is inside the fault
+        study and so cost the whole project (Proserpine, Oct-Nov 2026).
+        Downstream it reads as any line without a rating: conductor
+        damage NO DATA, unassessable on the dashboard.
+
     Example:
         >>> elm_lne = feeder.GetObjs("ElmLne")[0]
         >>> line = initialise_line_dataclass(elm_lne)
@@ -132,6 +142,14 @@ def initialise_line_dataclass(
     """
     if elmlne is None:
         return None
+
+    if elmlne.typ_id is None:
+        logger.warning(
+            "Line %s has no type (%s): kept in its device section with "
+            "no conductor type, thermal rating or phase count, so its "
+            "conductor damage is reported as no data",
+            _full_name(elmlne), _service_state(elmlne),
+        )
 
     line_type, thermal_rating = _get_conductor_info(
         elmlne, oh_lines=oh_lines
@@ -146,6 +164,22 @@ def initialise_line_dataclass(
         length=_get_length(elmlne, region),
         constr=determine_line_const(elmlne),
     )
+
+
+def _full_name(line: "pft.ElmLne") -> str:
+    """The line's full path for a log line, or its name if unreadable."""
+    try:
+        return line.GetFullName()
+    except AttributeError:
+        return str(getattr(line, "loc_name", line))
+
+
+def _service_state(line: "pft.ElmLne") -> str:
+    """'in service' or 'out of service', for the untyped-line warning."""
+    try:
+        return "out of service" if line.IsOutOfService() else "in service"
+    except AttributeError:
+        return "service state unknown"
 
 
 def determine_line_const(line: "pft.ElmLne") -> str:
@@ -260,21 +294,28 @@ def _get_phases(line: "pft.ElmLne") -> int:
         line: PowerFactory ElmLne object
 
     Returns:
-        Number of phases (1, 2, or 3)
-
-    Raises:
-        TypeError: If line type is not a recognized construction type
+        Number of phases (1, 2, or 3), or None when the line has no type
+        (the caller warns) or a type of another class (warned here).
+        Either used to raise, which aborted the whole project.
     """
-    construction = line.typ_id.GetClassName()
+    line_type = line.typ_id
+    if line_type is None:
+        return None
+
+    construction = line_type.GetClassName()
 
     if construction == "TypGeo":
-        return int(line.typ_id.xy_c[0][0])
+        return int(line_type.xy_c[0][0])
     elif construction == "TypCabsys":
-        return int(line.typ_id.GetAttribute("nphas")[0])
+        return int(line_type.GetAttribute("nphas")[0])
     elif construction == "TypLne":
-        return int(line.typ_id.GetAttribute("nlnph"))
+        return int(line_type.GetAttribute("nlnph"))
     else:
-        raise TypeError(f"{construction}: Unhandled construction type")
+        logger.warning(
+            "Line %s: phase count not read from a %s line type",
+            _full_name(line), construction,
+        )
+        return None
 
 
 def _get_voltage(line: "pft.ElmLne") -> float:
@@ -330,21 +371,30 @@ def _get_conductor_info(
     For cable systems, returns "NA"
     for both values.
 
+    A line with no type returns "NA" for both (the caller warns), as
+    does a tower-geometry line with no conductor type (warned here).
+
     Args:
         line: PowerFactory ElmLne object
 
     Returns:
         Tuple of (line_type: str, thermal_rating: float or "NA")
     """
-    construction = line.typ_id.GetClassName()
-
     line_type = "NA"
     thermal_rating = "NA"
+
+    if line.typ_id is None:
+        return line_type, thermal_rating
+
+    construction = line.typ_id.GetClassName()
 
     cond_rating_dict = utils.conductors_properties()
 
     if oh_lines is not None and line in oh_lines:
         typ_con = line.GetAttribute("e:pCondCir")
+        if typ_con is None:
+            _warn_no_conductor(line)
+            return line_type, thermal_rating
         line_type = typ_con.loc_name
         data = _match_conductor(line_type, cond_rating_dict)
         if data is not None:
@@ -352,6 +402,9 @@ def _get_conductor_info(
     else:
         if construction == "TypGeo":
             typ_con = line.GetAttribute("e:pCondCir")
+            if typ_con is None:
+                _warn_no_conductor(line)
+                return line_type, thermal_rating
             line_type =  typ_con.loc_name
             thermal_rating = round(typ_con.GetAttribute("e:Ithr"), 3) * 1000
         elif construction == "TypLne":
@@ -362,3 +415,12 @@ def _get_conductor_info(
             # Cable systems - thermal rating handled differently
             pass
     return line_type, thermal_rating
+
+
+def _warn_no_conductor(line: "pft.ElmLne") -> None:
+    """Warn that a tower-geometry line has no conductor type assigned."""
+    logger.warning(
+        "Line %s has no conductor type (pCondCir): no thermal rating, so "
+        "its conductor damage is reported as no data",
+        _full_name(line),
+    )

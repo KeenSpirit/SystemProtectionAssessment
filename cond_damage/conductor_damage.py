@@ -621,11 +621,10 @@ def swer_fault_range(
     min_fl = line.min_fl_pg
     max_fl = line.max_fl_pg
 
-    line_type = line.obj.typ_id
-
-    # Check if SWER transformation applies
+    # Check if SWER transformation applies. is_swer_line is False for a
+    # line with no type, which used to raise here on typ_id.loc_name.
     is_swer = (
-        'SWER' in line_type.loc_name
+        criteria.is_swer_line(line)
         and line.phases == 1
         and device.phases > 1
     )

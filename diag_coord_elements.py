@@ -716,7 +716,7 @@ def _path_of(relay: Any, element: Any) -> str:
 # Entry point
 # ==========================================================================
 
-def diagnose(relay: Any, currents: Sequence[float], live: bool = False) -> str:
+def diagnose(relay: Any, currents: Sequence[float], live: bool = True) -> str:
     rep = Report()
     rep.head(f"COORDINATION ELEMENT DIAGNOSTIC: {_name(relay)}")
     relay_type = _attr(relay, "typ_id")

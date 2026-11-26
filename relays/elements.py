@@ -11,7 +11,7 @@ Functions:
 """
 
 from typing import Dict, List, Union, TYPE_CHECKING
-import logginga
+import logging
 
 if TYPE_CHECKING:
     from pf_config import pft

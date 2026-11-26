@@ -84,6 +84,14 @@ warnings before running (`interactive/tools/model_checks.py`).
 - Floating terminals (end-of-line with a single connection) are
   detected; their impedance is the opposite terminal's impedance plus
   the full line impedance
+- A line with no type (`typ_id` empty) stays in its device section:
+  conductor type and thermal rating "NA", phase count unknown, with a
+  warning naming the line and whether it is in service. Its conductor
+  damage is reported as no data (unassessable on the dashboard), it is
+  never treated as SWER, and its construction class falls to the
+  rules above ("OH" unless it is a cable). A tower-geometry line with
+  no conductor type is handled the same way. A floating terminal on an
+  untyped line is skipped, as the line has no impedance
 
 ## Regional Differences
 

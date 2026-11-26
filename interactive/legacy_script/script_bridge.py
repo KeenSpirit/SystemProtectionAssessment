@@ -237,6 +237,10 @@ def _rating_amps(line):
 def get_conductor(line):
     """Looks at the tower geometry or the cable system to return the conductor type and thermal rating
     """
+    if line.typ_id is None:
+        # Untyped line: no conductor and no rating (see assets/line.py).
+        return ['NA', 'NA']
+
     construction = line.typ_id.GetClassName()
 
     if construction == 'TypGeo':
