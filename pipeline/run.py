@@ -28,6 +28,7 @@ from fdr_open_points import get_open_points as gop
 from fault_study import fault_level_study as fs
 from cond_damage import conductor_damage as cd
 from prot_coordination import prot_coord as pc
+from relays import trip_time
 from relays.reach_factors import (populate_reach_factors,
                                   populate_line_reach_factors)
 
@@ -118,6 +119,10 @@ def run_assessment(
     Raises:
         pf.ExitError: If the user breaks the run in PowerFactory.
     """
+    # Elements that cannot give a trip time are reported once per
+    # assessment: start this assessment's list empty.
+    trip_time.reset_element_warnings()
+
     # The project's open switches are the same for every feeder: list
     # them once, then test each feeder against that list.
     open_switches = gop.find_open_switches(app)

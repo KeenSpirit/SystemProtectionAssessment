@@ -1,4 +1,31 @@
-from typing import Dict, List, Optional, Tuple, Any
+"""
+Operating times of fuses and relay elements.
+
+Pure calculation on the settings and curve data of PowerFactory
+objects: the time a fuse, an IDMT element (RelToc) or an instantaneous
+element (RelIoc) takes to operate at a given current. Conductor damage
+and protection coordination both take their times from here.
+
+An element whose settings or curve cannot give a time is left out, not
+allowed to stop the feeder: element_trip_time logs one warning naming
+the relay and element, then returns None, which every caller already
+reads as "does not operate".
+
+Functions:
+    max_phase_fl: Highest maximum phase fault level of an object
+    fuse_has_min_melt: Whether a fuse has a minimum melt curve
+    fuse_clear_time: Fuse total clearing time
+    fuse_min_melt_time: Fuse minimum melt time
+    fuse_curve_time: Fuse time on a selected curve
+    element_trip_time: Relay element operating time
+    reset_element_warnings: Start a new assessment's warning list
+"""
+
+import logging
+import math
+from typing import Any, List, Optional
+
+logger = logging.getLogger(__name__)
 
 
 def max_phase_fl(obj: Any) -> Optional[float]:
@@ -159,6 +186,146 @@ def _interpolate_fuse_time(
 # =============================================================================
 
 
+# Elements already reported in this assessment, as (element full name,
+# reason). element_trip_time runs for every element at every fault level
+# of every line, so an unusable element would otherwise log the same
+# line thousands of times. Cleared by reset_element_warnings at the
+# start of each assessment, so each project, and each re-run in the
+# same PowerFactory session, reports its own elements.
+_ELEMENT_WARNED: set = set()
+
+# What a bad setting, a missing object or malformed curve data raises
+# inside the calculation. Deliberately not Exception: a user break
+# (powerfactory.ExitError) must still stop the run.
+_ELEMENT_ERRORS = (
+    ArithmeticError, AttributeError, IndexError, TypeError, ValueError
+)
+
+# I/Ip no further than this above 1 is "at pickup". An inverse curve
+# runs to infinite time there and rounding can make its denominator
+# exactly zero, so no time is the correct result, not a data fault,
+# and it is not reported.
+_AT_PICKUP_TOL = 1e-6
+
+
+def reset_element_warnings() -> None:
+    """
+    Forget which elements have been reported.
+
+    Call at the start of each assessment so every unusable element is
+    reported once per assessment.
+    """
+    _ELEMENT_WARNED.clear()
+
+
+def _element_label(element: Any) -> str:
+    """
+    'Relay/Sub-relay/Element' for log messages.
+
+    Reclosers hold each trip's curves in a sub-relay ('Trip 1'), so the
+    element's own name is not enough to find it. Never raises.
+    """
+    try:
+        names = [element.loc_name]
+        parent = element.GetParent()
+        depth = 0
+        while (parent is not None and depth < 10
+               and parent.GetClassName() == 'ElmRelay'):
+            names.append(parent.loc_name)
+            parent = parent.GetParent()
+            depth += 1
+        return "/".join(reversed(names))
+    except Exception:
+        return str(element)
+
+
+def _warn_element(element: Any, reason: str, message: str) -> None:
+    """
+    Log an unusable element, once per element and reason.
+
+    Args:
+        element: RelToc or RelIoc element.
+        reason: Short key for the kind of problem; one warning is
+            logged per element for each key.
+        message: What is wrong and how the element is treated.
+    """
+    try:
+        identity = element.GetFullName()
+    except Exception:
+        identity = _element_label(element)
+
+    key = (identity, reason)
+    if key in _ELEMENT_WARNED:
+        return
+    _ELEMENT_WARNED.add(key)
+
+    try:
+        class_name = element.GetClassName()
+    except Exception:
+        class_name = type(element).__name__
+    logger.warning(f"{_element_label(element)} ({class_name}): {message}")
+
+
+def _usable_pickup(element: Any) -> Optional[float]:
+    """
+    The element's primary pickup, or None when it cannot be used.
+
+    A pickup of zero (or less, or missing) is not a setting an element
+    can operate on. In the IDMT formulas it is a division by zero; on
+    an instantaneous element every current exceeds it, so the element
+    would trip in its minimum time for every fault.
+
+    Args:
+        element: RelToc or RelIoc element.
+
+    Returns:
+        e:cpIpset in primary amps when it is above zero, else None
+        with a warning.
+    """
+    pickup = element.GetAttribute("e:cpIpset")
+    if pickup is not None and pickup > 0:
+        return pickup
+
+    _warn_element(
+        element, 'pickup',
+        f"pickup (cpIpset) is {pickup!r} A; element left out of trip "
+        f"times (treated as not operating)"
+    )
+    return None
+
+
+def _curve_operates(element: Any, denominator: Any, i_ip: float) -> bool:
+    """
+    Whether an inverse curve's denominator gives an operating time.
+
+    At or below zero the current is at or below the curve's asymptote
+    and the element does not operate. Right at pickup that is expected
+    and silent; further above pickup it means the characteristic's
+    parameters are not what the formula expects, and is reported.
+
+    Args:
+        element: RelToc element, for the warning.
+        denominator: Denominator of the curve formula. Complex when a
+            negative base was raised to a fractional power.
+        i_ip: Current as a multiple of pickup (I/Ip).
+
+    Returns:
+        True when the denominator is a real number above zero.
+    """
+    if not isinstance(denominator, complex) and denominator > 0:
+        return True
+
+    if i_ip - 1 > _AT_PICKUP_TOL:
+        _warn_element(
+            element, 'denominator',
+            f"curve gives no operating time at {i_ip:.4g} x pickup "
+            f"(formula denominator {denominator!r}); treated as not "
+            f"operating at such currents. Check the parameters of its "
+            f"characteristic"
+        )
+    return False
+
+
 def element_trip_time(element: Any, flt_cur: float) -> Optional[float]:
     """
     Calculate relay element operating time for a given fault current.
@@ -175,6 +342,11 @@ def element_trip_time(element: Any, flt_cur: float) -> Optional[float]:
         - Type 6: Hermite Polynomial
         - Type 8: Special Equation
 
+    One unusable element must not stop its feeder (issues log bug #11:
+    a RelToc with a zero pickup raised ZeroDivisionError and the whole
+    feeder was dropped from the results). Such an element is reported
+    once per assessment, by relay and element name, and gives None.
+
     Args:
         element: RelToc or RelIoc element.
         flt_cur: Fault current in Amperes.
@@ -183,17 +355,37 @@ def element_trip_time(element: Any, flt_cur: float) -> Optional[float]:
         Operating time in seconds, or None if:
         - Fault current below pickup
         - Unsupported curve type
+        - The element cannot give a time: pickup zero or missing, no
+          characteristic assigned, current at or below the curve's
+          asymptote, or settings or curve data that fail in the
+          calculation (each logged as a warning)
 
     Note:
         For RelIoc elements, returns the minimum operate time if
-        the fault current exceeds the pickup setting.
+        the fault current is at or above the pickup setting.
     """
-    op_time = None
+    class_name = element.GetClassName()
+    if class_name == 'RelToc':
+        calculate = _calculate_toc_time
+    elif class_name == 'RelIoc':
+        calculate = _calculate_ioc_time
+    else:
+        return None
 
-    if element.GetClassName() == 'RelToc':
-        op_time = _calculate_toc_time(element, flt_cur)
-    elif element.GetClassName() == 'RelIoc':
-        op_time = _calculate_ioc_time(element, flt_cur)
+    try:
+        op_time = calculate(element, flt_cur)
+        if op_time is not None and (
+            isinstance(op_time, complex) or not math.isfinite(op_time)
+        ):
+            raise ValueError(f"result {op_time!r} is not a time")
+    except _ELEMENT_ERRORS as exc:
+        _warn_element(
+            element, type(exc).__name__,
+            f"trip time could not be calculated at {flt_cur!r} A "
+            f"({type(exc).__name__}: {exc}); treated as not operating. "
+            f"Check its settings and characteristic"
+        )
+        return None
 
     return op_time
 
@@ -207,15 +399,24 @@ def _calculate_toc_time(element: Any, flt_cur: float) -> Optional[float]:
         flt_cur: Fault current in Amperes.
 
     Returns:
-        Operating time in seconds, or None if below pickup.
+        Operating time in seconds, or None if below pickup, or if the
+        pickup is unusable, no characteristic is assigned or the
+        current is at or below the curve's asymptote.
     """
-    pickup = element.GetAttribute("e:cpIpset")
+    pickup = _usable_pickup(element)
+    if pickup is None or flt_cur <= pickup:
+        return None
 
-    if flt_cur <= pickup:
+    curve_char = element.GetAttribute("e:pcharac")
+    if curve_char is None:
+        _warn_element(
+            element, 'curve',
+            "no characteristic curve assigned (pcharac); element left "
+            "out of trip times (treated as not operating)"
+        )
         return None
 
     time_dial = element.GetAttribute("e:Tpset")
-    curve_char = element.GetAttribute("e:pcharac")
     curve_type = curve_char.GetAttribute("e:i_type")
     curve_var = curve_char.GetAttribute("e:vmat")
 
@@ -228,13 +429,19 @@ def _calculate_toc_time(element: Any, flt_cur: float) -> Optional[float]:
     # IEC 255-3
     if curve_type == 1:
         a1, a2, a3 = curve_var[0][0], curve_var[1][0], curve_var[2][0]
-        return time_dial * a1 / (i_ip ** a2 - a3)
+        denominator = i_ip ** a2 - a3
+        if not _curve_operates(element, denominator, i_ip):
+            return None
+        return time_dial * a1 / denominator
 
     # ANSI/IEEE
     if curve_type == 2:
         a1, a2 = curve_var[0][0], curve_var[1][0]
         a3, a4 = curve_var[2][0], curve_var[3][0]
-        return time_dial * (a1 / (i_ip ** a2 - a3) + a4)
+        denominator = i_ip ** a2 - a3
+        if not _curve_operates(element, denominator, i_ip):
+            return None
+        return time_dial * (a1 / denominator + a4)
 
     # ANSI/IEEE squared
     if curve_type == 3:
@@ -248,9 +455,15 @@ def _calculate_toc_time(element: Any, flt_cur: float) -> Optional[float]:
         a5 = curve_var[4][0]
 
         if i_ip >= 1.5:
-            return ((a1 + a2) / ((i_ip - a3) ** a4)) * time_dial / 24000
+            denominator = (i_ip - a3) ** a4
+            if not _curve_operates(element, denominator, i_ip):
+                return None
+            return ((a1 + a2) / denominator) * time_dial / 24000
         else:
-            return (a5 / (i_ip - 1)) * time_dial / 24000
+            denominator = i_ip - 1
+            if not _curve_operates(element, denominator, i_ip):
+                return None
+            return (a5 / denominator) * time_dial / 24000
 
     # Hermite Polynomial
     if curve_type == 6:
@@ -262,8 +475,11 @@ def _calculate_toc_time(element: Any, flt_cur: float) -> Optional[float]:
     if curve_type == 8:
         a1, a2, a3 = curve_var[0][0], curve_var[1][0], curve_var[2][0]
         b1, b2, b3 = curve_var[3][0], curve_var[4][0], curve_var[5][0]
+        denominator = (i_ip + b1) ** b2 + b3
+        if not _curve_operates(element, denominator, i_ip):
+            return None
         return (
-            (time_dial * a1) / ((i_ip + b1) ** b2 + b3)
+            (time_dial * a1) / denominator
             + time_dial * a2 + a3
         )
 
@@ -328,12 +544,13 @@ def _calculate_ioc_time(element: Any, flt_cur: float) -> Optional[float]:
         flt_cur: Fault current in Amperes.
 
     Returns:
-        Minimum operate time if above pickup, None otherwise.
+        Minimum operate time if at or above pickup, None otherwise.
+        None also when the pickup is unusable: every current is at or
+        above a zero pickup, so the element would otherwise give its
+        minimum operate time for every fault.
     """
-    min_time = element.GetAttribute("e:cptotime")
-    pickup = element.GetAttribute("e:cpIpset")
+    pickup = _usable_pickup(element)
+    if pickup is None or flt_cur < pickup:
+        return None
 
-    if flt_cur >= pickup:
-        return min_time
-
-    return None
+    return element.GetAttribute("e:cptotime")
