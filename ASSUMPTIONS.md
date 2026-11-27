@@ -185,6 +185,14 @@ result.
   come from the regional source z-data workbooks and are written to
   the matched grids. Unmatched grids keep the model's values, with the
   minimum reused as the system normal minimum.
+- **Batch, unusable workbook values:** a value an external grid cannot
+  hold is a fault current of zero or less, a Z2/Z1 of zero or less, a
+  negative R/X, X0/X1 or R0/X0, or a blank. A contingency minimum row
+  with such a value is replaced by that grid's system normal minimum
+  row (the same substitute as for a grid with no contingency row). A
+  maximum or system normal minimum row with such a value, or any value
+  PowerFactory refuses on write, leaves that grid on the model's
+  values. Each case is logged by grid.
 - **Interactive:** entered in the feeder dialog, pre-filled from the
   model; the system normal minimum is pre-filled from the master
   project grid's `snssmin`, converted to a current at 11 kV. The values

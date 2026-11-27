@@ -34,6 +34,12 @@ ikss, R/X, Z2/Z1, X0/X1, R0/X0)::
         ...
     }
 
+Every row is screened before it is returned, so that nothing reaches
+``ElmXnet`` that PowerFactory would refuse (a fault current of zero or
+less, a negative ratio, a blank). A contingency minimum that fails the
+screen is replaced by the grid's system normal minimum; a maximum or
+system normal minimum that fails it drops the grid.
+
 A missing workbook, sheet or key is never fatal: the function logs and
 returns what it could build, leaving
 ``pipeline.discovery.get_grid_data`` to fall back to the values already
@@ -41,8 +47,9 @@ stored on the PowerFactory model.
 """
 
 import logging
+import math
 from pathlib import Path
-from typing import Any, Dict, Iterator, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from openpyxl import load_workbook
 
@@ -85,6 +92,18 @@ BOUND_MIN_SN = "Min_SN"
 # SEQ workbook publishes amps in column F, so it is converted on read
 # and both regions return the same unit.
 SEQ_IKSS_TO_KA = 0.001
+
+# The five figures that follow the scenario name in each row, with
+# whether zero is a usable value. ElmXnet refuses a negative ratio
+# (issues-log bug #5: Raceview, X0/X1 = -132.8), and a source needs a
+# fault current and a Z2/Z1 above zero.
+_VALUE_RULES: Tuple[Tuple[str, bool], ...] = (
+    ("3P fault", False),
+    ("R/X", True),
+    ("Z2/Z1", False),
+    ("X0/X1", True),
+    ("R0/X0", True),
+)
 
 # Both sources fall between 0.1 kA and 40 kA, so anything above this is
 # not a kA figure and points at a change of units in the workbook.
@@ -179,7 +198,8 @@ def _build_regional(workbook: Path) -> Dict[str, Dict[str, List[Any]]]:
     Grids are keyed by column B. Each contributes three rows: a "Max"
     row, a "Min" contingency row and a "Min_SN" system normal row. Where a
     grid publishes no contingency minimum, 'min' falls back to the
-    first "Min" row of any scenario.
+    first "Min" row of any scenario. Rows are screened by
+    ``_screen_scenarios``.
 
     Args:
         workbook: Path to grid_results_all.xlsx.
@@ -190,6 +210,7 @@ def _build_regional(workbook: Path) -> Dict[str, Dict[str, List[Any]]]:
     grid_data: Dict[str, Dict[str, List[Any]]] = {}
     incomplete: List[str] = []
     bad_values: List[str] = []
+    min_replaced: List[str] = []
     min_fallback: List[str] = []
 
     wb = load_workbook(workbook, read_only=True, data_only=True)
@@ -218,11 +239,15 @@ def _build_regional(workbook: Path) -> Dict[str, Dict[str, List[Any]]]:
                 incomplete.append(key)
                 continue
 
-            if not all(
-                    _all_numeric(row[1:]) for row in (maximum, minimum, sn_minimum)
-            ):
-                bad_values.append(key)
+            usable, problem = _screen_scenarios(
+                key, maximum, minimum, sn_minimum
+            )
+            if usable is None:
+                bad_values.append(problem)
                 continue
+            if problem:
+                min_replaced.append(problem)
+            maximum, minimum, sn_minimum = usable
 
             grid_data[key] = {
                 "max": maximum,
@@ -238,7 +263,7 @@ def _build_regional(workbook: Path) -> Dict[str, Dict[str, List[Any]]]:
             "'Min' row was used for 'min'. First few: %s",
             len(min_fallback), workbook.name, min_fallback[:5]
         )
-    _log_omissions(workbook, incomplete, bad_values)
+    _log_omissions(workbook, incomplete, bad_values, min_replaced)
     _check_ikss_units(workbook, grid_data)
     return grid_data
 
@@ -253,8 +278,9 @@ def _build_seq(workbook: Path) -> Dict[str, Dict[str, List[Any]]]:
     Grids are keyed by column B. Each contributes three rows: a "Max"
     row, a "Min" contingency row and a "Min" system normal row. Where a
     grid publishes no contingency minimum, 'min' falls back to the
-    first "Min" row of any scenario. Fault currents are converted from
-    amps to kA.
+    first "Min" row of any scenario. Rows are screened by
+    ``_screen_scenarios``, then fault currents are converted from amps
+    to kA.
 
     Args:
         workbook: Path to grid_results_all.xlsx.
@@ -265,6 +291,7 @@ def _build_seq(workbook: Path) -> Dict[str, Dict[str, List[Any]]]:
     grid_data: Dict[str, Dict[str, List[Any]]] = {}
     incomplete: List[str] = []
     bad_values: List[str] = []
+    min_replaced: List[str] = []
     min_fallback: List[str] = []
 
     wb = load_workbook(workbook, read_only=True, data_only=True)
@@ -293,11 +320,15 @@ def _build_seq(workbook: Path) -> Dict[str, Dict[str, List[Any]]]:
                 incomplete.append(key)
                 continue
 
-            if not all(
-                _all_numeric(row[1:]) for row in (maximum, minimum, sn_minimum)
-            ):
-                bad_values.append(key)
+            usable, problem = _screen_scenarios(
+                key, maximum, minimum, sn_minimum
+            )
+            if usable is None:
+                bad_values.append(problem)
                 continue
+            if problem:
+                min_replaced.append(problem)
+            maximum, minimum, sn_minimum = usable
 
             grid_data[key] = {
                 "max": _to_ka(maximum),
@@ -313,7 +344,7 @@ def _build_seq(workbook: Path) -> Dict[str, Dict[str, List[Any]]]:
             "'Min' row was used for 'min'. First few: %s",
             len(min_fallback), workbook.name, min_fallback[:5]
         )
-    _log_omissions(workbook, incomplete, bad_values)
+    _log_omissions(workbook, incomplete, bad_values, min_replaced)
     _check_ikss_units(workbook, grid_data)
     return grid_data
 
@@ -376,6 +407,76 @@ def _select_row(
                 continue
         return list(row[1:])
     return None
+
+
+def _screen_scenarios(
+    key: str,
+    maximum: List[Any],
+    minimum: List[Any],
+    sn_minimum: List[Any],
+) -> Tuple[Optional[Tuple[List[Any], List[Any], List[Any]]], Optional[str]]:
+    """
+    Decide which of a grid's three rows can be written to an ElmXnet.
+
+    The maximum and the system normal minimum have no substitute, so an
+    unusable value in either drops the grid and the model keeps its own
+    values. The contingency minimum does: a study that takes out the
+    grid's own supply leaves the bus on backfeed alone, with no earth
+    reference, and publishes figures that are not a source equivalent
+    (Raceview ``IPS_11kV_TR2``, "IPS-TR2 OOS": 312 A, X0/X1 = -132.8).
+    That row is replaced by the system normal minimum, as it is for a
+    grid that publishes no contingency row at all.
+
+    Args:
+        key: Grid name, for the description.
+        maximum: The ``[scenario, ikss, ...]`` list for the maximum.
+        minimum: The same for the minimum.
+        sn_minimum: The same for the system normal minimum.
+
+    Returns:
+        Tuple of (rows, problem). ``rows`` is the
+        ``(maximum, minimum, sn_minimum)`` triple to use, or None if
+        the grid must be omitted. ``problem`` describes what was
+        wrong, or is None when all three rows were usable.
+    """
+    for label, row in (
+        ("maximum", maximum), ("system normal minimum", sn_minimum)
+    ):
+        faults = _unusable_values(row)
+        if faults:
+            return None, (
+                f"{key} ({label} row '{row[0]}': {', '.join(faults)})"
+            )
+
+    faults = _unusable_values(minimum)
+    if faults:
+        return (maximum, list(sn_minimum), sn_minimum), (
+            f"{key} (minimum row '{minimum[0]}': {', '.join(faults)})"
+        )
+
+    return (maximum, minimum, sn_minimum), None
+
+
+def _unusable_values(row: List[Any]) -> List[str]:
+    """
+    List the values of a row that cannot be written to an ElmXnet.
+
+    Args:
+        row: A six element ``[scenario, ikss, ...]`` list, in workbook
+            units.
+
+    Returns:
+        One "<column> <value>" string per value that is blank,
+        non-numeric, negative, or zero where zero is not usable. Empty
+        if the row is usable.
+    """
+    faults: List[str] = []
+    for (label, zero_ok), value in zip(_VALUE_RULES, row[1:]):
+        if not _is_number(value):
+            faults.append(f"{label} {'blank' if value is None else repr(value)}")
+        elif value < 0 or (value == 0 and not zero_ok):
+            faults.append(f"{label} {value:g}")
+    return faults
 
 
 def _to_ka(row: List[Any]) -> List[Any]:
@@ -524,11 +625,12 @@ def _normalise(name: str) -> str:
     return "".join(char for char in name.lower() if char.isalnum())
 
 
-def _all_numeric(values) -> bool:
-    """Return True if every value is a real number (bools excluded)."""
-    return all(
-        isinstance(value, (int, float)) and not isinstance(value, bool)
-        for value in values
+def _is_number(value: Any) -> bool:
+    """Return True for a finite real number (bools excluded)."""
+    return (
+        isinstance(value, (int, float))
+        and not isinstance(value, bool)
+        and math.isfinite(value)
     )
 
 
@@ -536,14 +638,22 @@ def _log_omissions(
     workbook: Path,
     missing: List[str],
     bad_values: List[str],
+    min_replaced: List[str],
 ) -> None:
     """
-    Log grids left out of the dictionary, with a sample of the names.
+    Log grids left out of the dictionary or given a substitute minimum.
+
+    Incomplete grids are logged as a count with a sample of the names.
+    Unusable values are logged one grid per line, with the scenario
+    and the values, because each one is a workbook row to correct.
 
     Args:
         workbook: Workbook the data came from.
         missing: Keys with no complete set of rows.
-        bad_values: Keys whose values were blank or non-numeric.
+        bad_values: Descriptions of grids omitted for an unusable
+            maximum or system normal minimum.
+        min_replaced: Descriptions of grids whose unusable minimum was
+            replaced by the system normal minimum.
     """
     if missing:
         logger.warning(
@@ -552,12 +662,16 @@ def _log_omissions(
             "First few: %s",
             len(missing), workbook.name, missing[:5]
         )
-    if bad_values:
+    for description in bad_values:
         logger.warning(
-            "%s grids in %s had blank or non-numeric impedance values "
-            "and were omitted; model defaults will be kept for these. "
-            "First few: %s",
-            len(bad_values), workbook.name, bad_values[:5]
+            "Unusable source z-data in %s: %s. Grid omitted; the model "
+            "keeps its own values for it.", workbook.name, description
+        )
+    for description in min_replaced:
+        logger.warning(
+            "Unusable source z-data in %s: %s. The system normal "
+            "minimum row is used as the minimum for this grid.",
+            workbook.name, description
         )
 
 
@@ -566,31 +680,25 @@ def _check_ikss_units(
     grid_data: Dict[str, Dict[str, List[Any]]],
 ) -> None:
     """
-    Warn when fault currents look wrong for the ElmXnet ikss unit (kA).
+    Exclude grids whose fault currents are not in the ElmXnet unit (kA).
 
     ``pipeline.discovery.get_grid_data`` writes element 1 of each list
     straight to ``ikss``/``ikssmin``, which PowerFactory holds in kA.
     Values in the thousands are amps and would overstate the source by
-    1000x; values at or below zero cannot be applied to an in-service
-    grid.
+    1000x, so the grid is dropped and the model keeps its own values.
 
     Args:
         workbook: Workbook the data came from.
-        grid_data: The dictionary just built.
+        grid_data: The dictionary just built. Mutated in place.
     """
-    amps_like: List[str] = []
-    non_positive: List[str] = []
-
-    for key, scenarios in grid_data.items():
-        currents = [scenarios[name][1] for name in ("max", "min", "sn_min")]
-        if any(value > _IKSS_KA_SANITY_LIMIT for value in currents):
-            amps_like.append(key)
-        if any(value <= 0 for value in currents):
-            non_positive.append(key)
-
-    # Neither kind of value may reach ElmXnet: drop the grid so that
-    # pipeline.discovery.get_grid_data keeps the model's own values for it.
-    for key in set(amps_like) | set(non_positive):
+    amps_like = [
+        key for key, scenarios in grid_data.items()
+        if any(
+            scenarios[name][1] > _IKSS_KA_SANITY_LIMIT
+            for name in ("max", "min", "sn_min")
+        )
+    ]
+    for key in amps_like:
         del grid_data[key]
 
     if amps_like:
@@ -600,11 +708,4 @@ def _check_ikss_units(
             "First few: %s",
             len(amps_like), workbook.name, _IKSS_KA_SANITY_LIMIT,
             amps_like[:5]
-        )
-    if non_positive:
-        logger.warning(
-            "%s grids in %s have a fault current of zero or less; "
-            "excluded, so the model keeps its own values for them. "
-            "First few: %s",
-            len(non_positive), workbook.name, non_positive[:5]
         )

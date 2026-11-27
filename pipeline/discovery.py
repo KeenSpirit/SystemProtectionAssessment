@@ -113,6 +113,13 @@ def get_active_grids(app: pft.Application) -> List:
     ]
 
 
+# ElmXnet fault level attributes: five maximum, then five minimum.
+_GRID_ATTRIBUTES = [
+    'ikss', 'rntxn', 'z2tz1', 'x0tx1', 'r0tx0',
+    'ikssmin', 'rntxnmin', 'z2tz1min', 'x0tx1min', 'r0tx0min'
+]
+
+
 def get_grid_data(grids: List, region: str) -> Dict:
     """
     Collect fault level parameters for each external grid.
@@ -120,7 +127,9 @@ def get_grid_data(grids: List, region: str) -> Dict:
     Batch path source: the regional source z-data workbooks. Matched
     grids have their model max/min attributes overwritten with the
     workbook values; unmatched grids keep the model's own values,
-    with the minimum reused as the system normal minimum. The
+    with the minimum reused as the system normal minimum. So does a
+    grid whose workbook values PowerFactory refuses: its attributes
+    are put back as they were, and the other grids carry on. The
     interactive path keeps its own GUI and master-project source and
     does not call this function.
 
@@ -135,11 +144,6 @@ def get_grid_data(grids: List, region: str) -> Dict:
         min, and system normal minimum conditions.
     """
     grid_data = {}
-    attributes = [
-        'ikss', 'rntxn', 'z2tz1', 'x0tx1', 'r0tx0',
-        'ikssmin', 'rntxnmin', 'z2tz1min', 'x0tx1min', 'r0tx0min'
-    ]
-
     grid_data_import = load_source_z_data.grid_data_import(region)
     matched = 0
 
@@ -153,27 +157,26 @@ def get_grid_data(grids: List, region: str) -> Dict:
                 "No source z-data for external grid '%s'. Model "
                 "values kept.", name
             )
-            # Read the model's own values: 5 max, 5 min, then the min
-            # values again as the system normal minimum.
-            current = [grid.GetAttribute(attr) for attr in attributes]
-            grid_data[grid] = current + current[-5:]
+            grid_data[grid] = _model_grid_values(grid)
             continue
 
         # Element 0 of each list is the scenario name, not a value.
-        grid_data[grid] = (
+        values = (
                 scenario_dic['max'][-5:]
                 + scenario_dic['min'][-5:]
                 + scenario_dic['sn_min'][-5:]
         )
 
-        for i, attr in enumerate(attributes):
-            grid.SetAttribute(attr, grid_data[grid][i])
-        matched += 1
+        if _write_grid_values(grid, name, values):
+            grid_data[grid] = values
+            matched += 1
+        else:
+            grid_data[grid] = _model_grid_values(grid)
 
     if grids and not matched:
         logger.error(
-            "None of the %s external grids matched the source z-data "
-            "for region '%s'. Every grid is running on model defaults "
+            "None of the %s external grids took source z-data for "
+            "region '%s'. Every grid is running on model defaults "
             "- check grid naming in the workbook.", len(grids), region
         )
     else:
@@ -183,6 +186,69 @@ def get_grid_data(grids: List, region: str) -> Dict:
         )
 
     return grid_data
+
+
+def _model_grid_values(grid) -> List:
+    """
+    Read a grid's fault level parameters from the model.
+
+    Args:
+        grid: External grid (ElmXnet) object.
+
+    Returns:
+        List of 15 values: 5 max, 5 min, then the min values again
+        as the system normal minimum.
+    """
+    current = [grid.GetAttribute(attr) for attr in _GRID_ATTRIBUTES]
+    return current + current[-5:]
+
+
+def _write_grid_values(grid, name: str, values: List) -> bool:
+    """
+    Write workbook max/min values to a grid, all ten or none.
+
+    PowerFactory refuses a value outside an attribute's range with an
+    AttributeError, and persists each accepted write immediately. A
+    refusal part-way through would leave the grid with a mix of
+    workbook and model values, so the attributes already written are
+    put back before returning.
+
+    Args:
+        grid: External grid (ElmXnet) object.
+        name: Grid name, for the log.
+        values: Fault level parameters; the first ten are written.
+
+    Returns:
+        True if all ten attributes were written. False if PowerFactory
+        refused one, in which case the grid holds its original values.
+    """
+    original = [grid.GetAttribute(attr) for attr in _GRID_ATTRIBUTES]
+    written = 0
+    try:
+        for attr, value in zip(_GRID_ATTRIBUTES, values):
+            grid.SetAttribute(attr, value)
+            written += 1
+    except (AttributeError, TypeError, ValueError) as exc:
+        logger.warning(
+            "External grid '%s': PowerFactory refused %s = %r (%s). "
+            "Source z-data not applied to this grid; model values "
+            "kept.", name, _GRID_ATTRIBUTES[written], values[written], exc
+        )
+        # Undo in reverse order, so each step returns to a state the
+        # model has already held.
+        for attr, value in reversed(
+            list(zip(_GRID_ATTRIBUTES, original))[:written]
+        ):
+            try:
+                grid.SetAttribute(attr, value)
+            except (AttributeError, TypeError, ValueError):
+                logger.error(
+                    "External grid '%s': could not restore %s to %r; "
+                    "the model holds the source z-data value for it.",
+                    name, attr, value
+                )
+        return False
+    return True
 
 
 def get_feeders_devices(app, radial_list: List[str]
